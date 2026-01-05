@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import './App.css';
-import { Game } from './game/Game';
+import { Game } from './game/GameTSL';
 import { GameStateService, GameState } from './game/GameState';
 
 function App() {

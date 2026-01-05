@@ -316,10 +316,18 @@ export class Pathfinding {
     }
 
     private getWorldPosFromNode(node: Node): THREE.Vector3 {
+        // Y坐标设为0，敌人会根据实际地形高度自动调整
         return new THREE.Vector3(
             node.x - this.offset,
             0, 
             node.z - this.offset
         );
+    }
+    
+    /**
+     * 获取楼梯路径点信息，用于调试
+     */
+    public getWaypoints() {
+        return this.waypoints;
     }
 }

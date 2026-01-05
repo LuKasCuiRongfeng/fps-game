@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Weapon } from './Weapon';
+import { Weapon } from './WeaponTSL';
 import { SoundManager } from './SoundManager';
 
 export class PlayerController {
@@ -151,6 +151,9 @@ export class PlayerController {
     }
 
     public update(delta: number) {
+        // 更新武器动画
+        this.weapon.update(delta);
+        
         if (this.isLocked === true) {
             // Restore physics position (remove visual offset from previous frame)
             this.camera.position.y -= this.visualYOffset;
