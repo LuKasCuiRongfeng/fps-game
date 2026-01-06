@@ -6,12 +6,16 @@ import { GrenadeHand } from './GrenadeTSL';
 import { GameStateService, WeaponType } from './GameState';
 import { PlayerConfig, WeaponConfig } from './GameConfig';
 
+import { PhysicsSystem } from './PhysicsSystem';
+import { Enemy } from './EnemyTSL';
+
 export class PlayerController {
     private domElement: HTMLElement;
     private camera: THREE.Camera;
     private weapon: Weapon;
     private grenadeHand: GrenadeHand;
     private scene: THREE.Scene;
+    private physicsSystem: PhysicsSystem;
     
     // Movement state
     private moveForward: boolean = false;
@@ -69,11 +73,18 @@ export class PlayerController {
 
     private objects: THREE.Object3D[] = [];
 
-    constructor(camera: THREE.Camera, domElement: HTMLElement, scene: THREE.Scene, objects: THREE.Object3D[]) {
+    constructor(
+        camera: THREE.Camera, 
+        domElement: HTMLElement, 
+        scene: THREE.Scene, 
+        objects: THREE.Object3D[],
+        physicsSystem: PhysicsSystem
+    ) {
         this.domElement = domElement;
         this.camera = camera;
         this.scene = scene;
-        this.objects = objects;
+        this.objects = objects; // 保留引用但不用于碰撞
+        this.physicsSystem = physicsSystem;
         
         // Initialize angles from current camera rotation
         const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
@@ -83,12 +94,20 @@ export class PlayerController {
         this.targetYaw = this.yaw;
 
         this.weapon = new Weapon(camera);
+        this.weapon.setPhysicsSystem(this.physicsSystem);
         this.grenadeHand = new GrenadeHand(camera);
 
         this.initInputListeners();
         this.initPointerLock();
     }
     
+    /**
+     * 设置敌人列表 (用于射击检测优化)
+     */
+    public setEnemies(enemies: Enemy[]) {
+        this.weapon.setEnemies(enemies);
+    }
+
     /**
      * 设置粒子系统到武器
      */
@@ -442,9 +461,12 @@ export class PlayerController {
             this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
 
             // 2. Movement Physics
-            // Friction / Damping
-            this.velocity.x -= this.velocity.x * PlayerConfig.movement.friction * delta;
-            this.velocity.z -= this.velocity.z * PlayerConfig.movement.friction * delta;
+            // Friction / Damping (Exponential decay for frame-rate independence)
+            // Fix: Using simple subtraction causes instability at low FPS or high friction
+            const damping = Math.exp(-PlayerConfig.movement.friction * delta);
+            this.velocity.x *= damping;
+            this.velocity.z *= damping;
+            
             this.velocity.y -= PlayerConfig.movement.gravity * delta; // Gravity
 
             this.direction.z = Number(this.moveForward) - Number(this.moveBackward);
@@ -606,6 +628,9 @@ export class PlayerController {
     private checkCollisions(useSkinWidth: boolean = false): THREE.Box3 | null {
         const playerBox = new THREE.Box3();
         const position = this.camera.position;
+
+        // 如果物理系统未就绪，允许移动
+        if (!this.physicsSystem) return null;
         
         // 使用当前目标相机高度作为偏移 (这是脚到眼睛的距离)
         const cameraOffset = this.targetCameraHeight;
@@ -638,12 +663,23 @@ export class PlayerController {
         playerBox.min.set(position.x - radius, feetY + skinWidth, position.z - radius);
         playerBox.max.set(position.x + radius, feetY + height, position.z + radius);
 
-        for (const object of this.objects) {
-            const objectBox = new THREE.Box3().setFromObject(object);
-            if (playerBox.intersectsBox(objectBox)) {
-                return objectBox;
+        // 使用物理系统获取附近的碰撞体 (空间划分优化)
+        // 查询半径稍微大一点以覆盖周边
+        const nearbyEntries = this.physicsSystem.getNearbyObjects(position, 5.0);
+        
+        for (const entry of nearbyEntries) {
+            // entry.box 已经是世界坐标的 AABB，直接检测
+            if (playerBox.intersectsBox(entry.box)) {
+                // 如果是地面物体，忽略水平碰撞 (由 checkCollisions(true) 调用时)
+                // 只有当物体明确标记为 'isGround' 且我们是在做水平碰撞检测时才忽略
+                // 这样可以防止卡在楼梯平台或地砖接缝处
+                if (useSkinWidth && entry.object.userData.isGround) {
+                    continue;
+                }
+                return entry.box;
             }
         }
+        
         return null;
     }
 

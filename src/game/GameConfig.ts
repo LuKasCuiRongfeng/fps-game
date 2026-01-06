@@ -260,7 +260,7 @@ export const InitialState = {
 export const LevelConfig = {
     // 敌人生成
     enemySpawn: {
-        maxEnemies: 100,            // 最大敌人数量
+        maxEnemies: 1,            // 最大敌人数量
         spawnInterval: 5000,       // 生成间隔 (ms)
         spawnRadius: { min: 20, max: 40 },  // 生成距离范围
     },
@@ -279,8 +279,8 @@ export const WeatherConfig = {
     transitionDuration: 3.0,       // 天气切换过渡时间 (秒)
     autoChange: {
         enabled: true,             // 是否自动切换天气
-        minDuration: 5,           // 最短持续时间 (秒)
-        maxDuration: 5,          // 最长持续时间 (秒)
+        minDuration: 500,           // 最短持续时间 (秒)
+        maxDuration: 5000,          // 最长持续时间 (秒)
     },
     
     // 晴天配置
@@ -300,19 +300,19 @@ export const WeatherConfig = {
     rainy: {
         skyColor: 0x2d3748,        // 更暗的天空
         fogColor: 0x4a5568,        // 深灰色雾气
-        fogNear: 5,                // 极近的雾
-        fogFar: 60,                // 能见度很低
+        fogNear: 20,               // 极近的雾 (调整适应大地图)
+        fogFar: 180,               // 能见度很低
         ambientIntensity: 0.15,    // 非常暗的环境光
         sunIntensity: 0.1,         // 太阳几乎不可见
         sunColor: 0x6b7280,        // 深灰色光
         windStrength: 1.0,         // 强风伴随暴雨
-        particleDensity: 8000,     // 大量雨滴
+        particleDensity: 20000,    // 大量雨滴 (增加数量以适应大范围)
         rain: {
-            speed: { min: 25, max: 40 },    // 更快的下落速度
-            size: { width: 0.03, height: 0.5 },  // 更大的雨滴
-            color: 0x8899bb,        // 雨滴颜色
-            opacity: 0.7,           // 更不透明
-            area: { x: 80, y: 50, z: 80 },  // 更大的降雨区域
+            speed: { min: 25, max: 40 },
+            size: { width: 0.03, height: 0.5 },
+            color: 0x8899bb,
+            opacity: 0.7,
+            area: { x: 200, y: 50, z: 200 },  // 降雨区域跟随相机，不需要覆盖全图
         },
     },
     
@@ -320,13 +320,13 @@ export const WeatherConfig = {
     windy: {
         skyColor: 0x9ca3af,        // 多云天空
         fogColor: 0xa0aec0,        // 雾气颜色
-        fogNear: 30,               // 雾气起始
-        fogFar: 150,               // 能见度
+        fogNear: 50,               // 雾气起始
+        fogFar: 300,               // 能见度
         ambientIntensity: 0.5,     // 环境光
         sunIntensity: 0.7,         // 太阳光
         sunColor: 0xe5e7eb,        // 偏白光
         windStrength: 1.5,         // 强风
-        particleDensity: 500,      // 树叶/灰尘数量
+        particleDensity: 1000,     // 树叶/灰尘数量
         wind: {
             direction: { x: 1, y: 0.1, z: 0.3 },  // 风向
             gustFrequency: 2.0,     // 阵风频率
@@ -343,19 +343,19 @@ export const WeatherConfig = {
     sandstorm: {
         skyColor: 0xc9a86c,        // 沙黄色天空
         fogColor: 0xd4a84b,        // 黄色雾气
-        fogNear: 5,                // 极近的雾
-        fogFar: 50,                // 能见度极低
+        fogNear: 10,               // 极近的雾
+        fogFar: 100,               // 能见度极低
         ambientIntensity: 0.4,     // 昏暗环境
         sunIntensity: 0.2,         // 太阳几乎不可见
         sunColor: 0xd4a84b,        // 黄色光
         windStrength: 2.5,         // 极强风力
-        particleDensity: 5000,     // 大量沙粒
+        particleDensity: 15000,    // 大量沙粒
         sand: {
             speed: { min: 8, max: 15 },     // 沙粒速度
             size: { min: 0.02, max: 0.08 }, // 沙粒大小
             color: 0xd4a84b,         // 沙粒颜色
             opacity: 0.7,            // 透明度
-            area: { x: 80, y: 30, z: 80 },  // 沙尘区域
+            area: { x: 150, y: 30, z: 150 },  // 沙尘区域跟随相机
         },
         visibility: {
             damagePerSecond: 0,      // 沙尘伤害 (可选)
@@ -364,12 +364,74 @@ export const WeatherConfig = {
     },
 };
 
+// ==================== 环境植被配置 ====================
+export const EnvironmentConfig = {
+    trees: {
+        count: 1200,
+        trunk: {
+            radiusTop: 0.2,
+            radiusBottom: 0.4,
+            height: 2,
+            segments: 6
+        },
+        placement: {
+            scale: { min: 0.4, range: 0.3 }, // scale = min + random * range
+            minAltitude: -2.0, // 高于水位 (-3.0) 避免长在水里
+            excludeRadius: {
+                spawn: 45,
+                default: 15
+            }
+        }
+    },
+    grass: {
+        tall: {
+            count: 8000,
+            height: 1.2,
+            width: 0.12,
+            bladeCount: 7,
+            colorBase: 0x112200,
+            colorTip: 0x4d6600,
+            scale: { min: 0.8, max: 1.3 }
+        },
+        shrub: {
+            count: 3000,
+            colorBase: 0x003300,
+            colorTip: 0x2d8600,
+            scale: { min: 0.5, max: 0.9 },
+            width: 0.8, 
+            height: 0.7, 
+            segments: 8
+        },
+        dry: {
+            count: 2000,
+            height: 0.9,
+            width: 0.1,
+            bladeCount: 5,
+            colorBase: 0x3a3a10,
+            colorTip: 0x86862d,
+            scale: { min: 0.7, max: 1.1 }
+        },
+        placement: {
+            excludeRadius: {
+                spawn: 25,
+                default: 8
+            }
+        }
+    },
+    water: {
+        level: -3.0,
+        color: 0x234d57, // 更自然的蓝绿色 (Teal)
+        foamColor: 0xffffff,
+        opacity: 1   // 更高的不透明度
+    }
+};
+
 // ==================== 地图配置 ====================
 export const MapConfig = {
-    size: 200,           // 地图大小 (200x200)
+    size: 800,           // 地图大小 (800x800) - 扩大4倍 (面积16倍)
     wallHeight: 6,
-    chunkSize: 50,       // 分块大小 (用于LOD和剔除)
-    maxViewDistance: 100, // 最大可见距离
-    terrainSegments: 256, // 地形细分数量
-    terrainHeight: 5.0,   // 地形最大起伏高度
+    chunkSize: 100,      // 分块大小 (用于LOD和剔除) - 8x8 个块
+    maxViewDistance: 250, // 最大可见距离
+    terrainSegments: 800, // 地形细分数量 (保持 ~1米精度)
+    terrainHeight: 15.0,  // 地形最大起伏高度 (因地图变大，起伏也应适当变大)
 };

@@ -14,7 +14,8 @@ import {
     mix,
     positionLocal,
     modelViewMatrix,
-    varying
+    varying,
+    uv, length, smoothstep, sin, atan
 } from 'three/tsl';
 
 // @ts-ignore - WebGPU API
@@ -270,12 +271,57 @@ export class GPUParticleSystem {
         material.scaleNode = vec2(size);
         material.rotationNode = float(0); // 可选：如果有旋转
         
+        // --------------------------------------------------------
+        //   改进的粒子形状 (不再是方块)
+        // --------------------------------------------------------
+        const uvNode = uv(); // 获取 Sprite UV (0..1)
+        const centeredUV = uvNode.sub(vec2(0.5)); // -0.5 .. 0.5
+        const distSq = centeredUV.x.mul(centeredUV.x).add(centeredUV.y.mul(centeredUV.y)); // r^2
+        const dist = length(centeredUV); // r
+
+        // 根据 typeBuffer 的值 (int) 来决定形状
+        // 0:spark, 1:smoke, 2:blood, 3:debris, 4:muzzle, 5:explosion
+        // 注意：WebGPU 中 int 比较通常用 equal
+        // 此处为了性能和 TSL 兼容性，我们用 float 比较或者简单的通用圆形衰减
+
+        // 通用的软圆形发光点 (模拟火花、光点)
+        // 边缘软化：从中心 0 到边缘 0.5，强度从 1 降到 0
+        // smoothstep(0.5, 0.0, dist) -> 边缘是 0 (硬切)，我们需要让它自然消散
+        const circleShape = smoothstep(float(0.5), float(0.2), dist);
+
+        // 如果是烟雾或爆炸，我们要更柔和、更像云团的形状
+        // 简单的云雾噪声模拟 (基于 UV)
+        const cloudNoise = sin(uvNode.x.mul(10.0)).mul(sin(uvNode.y.mul(10.0))).mul(0.2); 
+        const cloudShape = smoothstep(float(0.5), float(0.0), dist.add(cloudNoise));
+
+        // 如果是碎片 (debris/blood)，可能稍微锐利一点
+        const hardShape = smoothstep(float(0.5), float(0.4), dist);
+
+        // 由于这是所有粒子的统一 Shader (Instanced)，我们需要做出取舍或者根据额外属性分支
+        // 这里我们先使用一个通用的漂亮的 "光晕点" 形状，它比方块好得多
+        // 并在中心极亮。
+        
+        // 核心两倍亮度，边缘快速衰减
+        const glow = float(0.05).div(distSq.add(0.01)); // 物理反平方衰减模拟
+        const softCircle = smoothstep(float(0.5), float(0.0), dist);
+        
+        // 最终透明度形状：结合辉光和软圆，防止无限大
+        const shapePre = glow.mul(softCircle).min(1.0);
+
         // 颜色和透明度
         // 如果死了 (currentLife >= maxLife)，透明度设为 0
         const isDead = currentLife.greaterThanEqual(maxLife);
-        const alpha = select(isDead, float(0), pColor.w);
+        const alphaBase = select(isDead, float(0), pColor.w);
         
-        material.colorNode = vec4(pColor.xyz, alpha);
+        // 最终 Alpha = 粒子自身 Alpha * 形状 Alpha
+        const finalAlpha = alphaBase.mul(shapePre);
+        
+        // 丢弃过暗的像素 (Clip)
+        // 避免不可见的片元写入深度或消耗混合带宽
+        // if (finalAlpha < 0.01) discard; 
+        // TSL 中用 discard(expr) 或直接通过 alpha 混合
+
+        material.colorNode = vec4(pColor.xyz, finalAlpha);
         
         return material;
     }

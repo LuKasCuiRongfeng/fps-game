@@ -20,6 +20,7 @@ import { GameStateService } from './GameState';
 import { SoundManager } from './SoundManager';
 import { Level } from './LevelTSL';
 import { Pathfinding } from './Pathfinding';
+import { PhysicsSystem } from './PhysicsSystem';
 import { UniformManager } from './shaders/TSLMaterials';
 import { GPUComputeSystem } from './shaders/GPUCompute';
 import { GPUParticleSystem } from './shaders/GPUParticles';
@@ -46,6 +47,7 @@ export class Game {
     private pickupSpawnTimer: number = 0;
     
     // 系统
+    private physicsSystem!: PhysicsSystem;
     private pathfinding!: Pathfinding;
     private level!: Level;
     private uniformManager: UniformManager;
@@ -105,8 +107,11 @@ export class Game {
         this.camera.position.set(0, 1.6, 5);
         this.scene.add(this.camera);
 
+        // 物理系统 (优化)
+        this.physicsSystem = new PhysicsSystem();
+
         // 关卡
-        this.level = new Level(this.scene, this.objects);
+        this.level = new Level(this.scene, this.objects, this.physicsSystem);
 
         // 寻路系统
         this.pathfinding = new Pathfinding(this.objects);
@@ -130,7 +135,8 @@ export class Game {
             this.camera, 
             this.container, 
             this.scene, 
-            this.objects
+            this.objects,
+            this.physicsSystem
         );
         
         // 设置地形高度回调
@@ -141,6 +147,9 @@ export class Game {
         
         // 将粒子系统连接到武器
         this.playerController.setParticleSystem(this.particleSystem);
+        
+        // 设置敌人列表 (优化射击检测)
+        this.playerController.setEnemies(this.enemies);
         
         // 设置拾取回调
         this.playerController.setPickupCallback(() => {
@@ -156,6 +165,13 @@ export class Game {
         this.playerController.setWeatherCycleCallback(() => {
             this.weatherSystem.cycleWeather();
         });
+
+        // 修复：初始化玩家位置，确保在地面之上
+        const spawnX = 0;
+        const spawnZ = 5;
+        const spawnHeight = this.level.getTerrainHeight(spawnX, spawnZ);
+        // 确保起步高度至少在地面上方 1.6米 (站立高度)
+        this.camera.position.set(spawnX, spawnHeight + 1.6, spawnZ);
 
         // 后处理
         this.setupPostProcessing();
@@ -398,6 +414,7 @@ export class Game {
         
         const enemy = new Enemy(new THREE.Vector3(x, 0, z));
         enemy.onGetGroundHeight = (x, z) => this.level.getTerrainHeight(x, z);
+        enemy.setPhysicsSystem(this.physicsSystem);
         enemy.gpuIndex = this.enemies.length;
         
         this.scene.add(enemy.mesh);
@@ -475,6 +492,16 @@ export class Game {
 
         // 更新天气系统
         this.weatherSystem.update(delta);
+        
+        // 同步雨水强度到关卡 (用于水面涟漪)
+        const isRainy = this.weatherSystem.getCurrentWeather() === 'rainy';
+        const targetRain = isRainy ? 1.0 : 0.0;
+        // 平滑过渡
+        this.level.rainIntensity.value = THREE.MathUtils.lerp(
+            this.level.rainIntensity.value, 
+            targetRain, 
+            delta * 0.5
+        );
 
         // 更新拾取物
         this.updatePickups(playerPos, delta);

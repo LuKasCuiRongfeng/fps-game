@@ -8,6 +8,7 @@ import { uniform, time, sin, cos, vec3, mix, float, smoothstep, uv } from 'three
 import { SoundManager } from './SoundManager';
 import { Pathfinding } from './Pathfinding';
 import { EnemyConfig } from './GameConfig';
+import { PhysicsSystem } from './PhysicsSystem';
 
 export class Enemy {
     public mesh: THREE.Group;
@@ -74,6 +75,9 @@ export class Enemy {
     
     // 地形高度回调
     public onGetGroundHeight: ((x: number, z: number) => number) | null = null;
+    
+    // 物理系统引用
+    private physicsSystem: PhysicsSystem | null = null;
 
 
     constructor(position: THREE.Vector3) {
@@ -88,6 +92,10 @@ export class Enemy {
         this.originalY = 0;
         
         this.mesh.userData = { isEnemy: true, entity: this };
+    }
+
+    public setPhysicsSystem(system: PhysicsSystem) {
+        this.physicsSystem = system;
     }
 
     /**
@@ -834,7 +842,27 @@ export class Enemy {
         }
         
         const checkRadius = EnemyConfig.collision.radius;
+        const feetY = position.y - EnemyConfig.collision.height;
         
+        // 优化：优先使用物理系统
+        if (this.physicsSystem) {
+            const nearbyEntries = this.physicsSystem.getNearbyObjects(position, 5.0);
+            for (const entry of nearbyEntries) {
+                // box 已经是世界坐标
+                 if (position.x >= entry.box.min.x - checkRadius &&
+                    position.x <= entry.box.max.x + checkRadius &&
+                    position.z >= entry.box.min.z - checkRadius &&
+                    position.z <= entry.box.max.z + checkRadius) {
+                    
+                    if (entry.box.max.y > groundY && entry.box.max.y <= feetY + EnemyConfig.collision.maxStepHeight) {
+                        groundY = entry.box.max.y;
+                    }
+                }
+            }
+            return groundY;
+        }
+
+        // 降级：遍历所有障碍物
         for (const object of obstacles) {
             if (object.userData.isGround) continue;
             if (object.userData.isWayPoint) continue;
@@ -848,7 +876,6 @@ export class Enemy {
                 position.z <= objectBox.max.z + checkRadius) {
                 
                 // 如果物体顶部在敌人脚下附近（可以站上去）
-                const feetY = position.y - EnemyConfig.collision.height;
                 if (objectBox.max.y > groundY && objectBox.max.y <= feetY + EnemyConfig.collision.maxStepHeight) {
                     groundY = objectBox.max.y;
                 }
@@ -899,6 +926,27 @@ export class Enemy {
             position.z + enemyRadius
         );
 
+        // 优化：优先使用物理系统 (Spatial Grid)
+        if (this.physicsSystem) {
+            const nearbyEntries = this.physicsSystem.getNearbyObjects(position, 5.0);
+            for (const entry of nearbyEntries) {
+                // entry.box 已经是世界坐标 AABB
+                if (enemyBox.intersectsBox(entry.box)) {
+                    // 如果是楼梯，检查是否可以跨越
+                    if (entry.object.userData.isStair) {
+                        const enemyFeetY = position.y - EnemyConfig.collision.height;
+                        const stepHeight = entry.box.max.y - enemyFeetY;
+                        if (stepHeight > 0 && stepHeight <= maxStepHeight) {
+                            continue;
+                        }
+                    }
+                    return entry.box;
+                }
+            }
+            return null;
+        }
+
+        // 降级：遍历所有障碍物 (性能较差)
         for (const object of obstacles) {
             if (object.userData.isGround) continue;
             if (object.userData.isWayPoint) continue;

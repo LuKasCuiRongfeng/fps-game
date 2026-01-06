@@ -6,18 +6,26 @@
 import * as THREE from 'three';
 import { MeshStandardNodeMaterial, MeshBasicNodeMaterial } from 'three/webgpu';
 import { 
-    time, sin, cos, vec3, mix, float, 
+    time, sin, cos, vec3, vec2, mix, float, 
     smoothstep, fract, floor, uv,
-    sub, max, mod, normalLocal, normalize, step, positionWorld, abs,
-    positionLocal
+    sub, max, min, mod, normalLocal, normalize, step, positionWorld, abs,
+    positionLocal, normalView, dot, pow, saturate, exp, uniform
 } from 'three/tsl';
-import { MapConfig } from './GameConfig';
+import { MapConfig, EnvironmentConfig } from './GameConfig';
+import { TreeSystem } from './TreeSystem';
+import { GrassSystem } from './GrassSystem';
+import { PhysicsSystem } from './PhysicsSystem';
 
 // 地图配置已经被移除，请统一引用 GameConfig
 
 export class Level {
     private scene: THREE.Scene;
     private objects: THREE.Object3D[];
+    private physicsSystem: PhysicsSystem;
+    
+    // 树木系统
+    private treeSystem: TreeSystem | null = null;
+    private grassSystem: GrassSystem | null = null;
     
     // 材质缓存 (性能优化 - 复用材质)
     private floorMaterial!: MeshStandardNodeMaterial;
@@ -29,10 +37,14 @@ export class Level {
     // 地形高度图数据
     private terrainHeights: Float32Array | null = null;
     private terrainSegmentSize: number = MapConfig.size / MapConfig.terrainSegments;
+    
+    // 全局环境 Uniforms
+    public rainIntensity = uniform(0); // 0 = 晴天, 1 = 暴雨
 
-    constructor(scene: THREE.Scene, objects: THREE.Object3D[]) {
+    constructor(scene: THREE.Scene, objects: THREE.Object3D[], physicsSystem: PhysicsSystem) {
         this.scene = scene;
         this.objects = objects;
+        this.physicsSystem = physicsSystem;
         
         // 预创建共享材质 (性能优化)
         this.initSharedMaterials();
@@ -45,6 +57,217 @@ export class Level {
         this.createStairs();
         this.createSkybox();
         this.createAtmosphere();
+        
+        // 生成树木
+        this.createTrees();
+        // 生成草丛
+        this.createGrass();
+        // 生成湖泊
+        this.createWater();
+
+        // 注册所有静态物体到物理系统
+        this.registerStaticPhysics();
+    }
+
+    /**
+     * 将生成的静态物体添加到物理系统
+     */
+    private registerStaticPhysics() {
+        console.log(`Registering ${this.objects.length} static objects to PhysicsSystem.`);
+        this.objects.forEach(obj => {
+            // 强制更新世界矩阵，确保包围盒计算正确
+            // 如果不更新，作为子对象的物体 (如楼梯) 会使用局部坐标计算造成位置错误
+            obj.updateMatrixWorld(true);
+            this.physicsSystem.addStaticObject(obj);
+        });
+    }
+    
+    /**
+     * 生成树木
+     */
+    private createTrees() {
+        this.treeSystem = new TreeSystem(this.scene, EnvironmentConfig.trees.count); 
+        
+        // 定义需要避开树木的区域 (出生点、主要路径)
+        const excludeAreas = [
+            { x: 0, z: 0, radius: EnvironmentConfig.trees.placement.excludeRadius.spawn }, 
+            { x: 30, z: 30, radius: EnvironmentConfig.trees.placement.excludeRadius.default }, 
+            { x: -30, z: -30, radius: EnvironmentConfig.trees.placement.excludeRadius.default }
+        ];
+        
+        // 使用与地形相同的高度回调
+        this.treeSystem.placeTrees(
+            MapConfig.size,
+            (x, z) => this.computeNoiseHeight(x, z),
+            excludeAreas
+        );
+    }
+
+    /**
+     * 生成草丛
+     */
+    private createGrass() {
+        this.grassSystem = new GrassSystem(this.scene);
+        
+        const excludeAreas = [
+            { x: 0, z: 0, radius: EnvironmentConfig.grass.placement.excludeRadius.spawn }, 
+            { x: 30, z: 30, radius: EnvironmentConfig.grass.placement.excludeRadius.default }, 
+            { x: -30, z: -30, radius: EnvironmentConfig.grass.placement.excludeRadius.default }
+        ];
+        
+        this.grassSystem.placeGrass(
+            MapConfig.size,
+            (x, z) => this.computeNoiseHeight(x, z),
+            excludeAreas
+        );
+    }
+
+    /**
+     * 创建湖泊 - 真实水面效果
+     */
+    private createWater() {
+        // 水面平面
+        const geometry = new THREE.PlaneGeometry(MapConfig.size, MapConfig.size, 64, 64);
+        geometry.rotateX(-Math.PI / 2);
+        
+        const material = new MeshStandardNodeMaterial({
+            color: new THREE.Color(EnvironmentConfig.water.color),
+            transparent: true,
+            opacity: EnvironmentConfig.water.opacity,
+            roughness: 0.05,
+            metalness: 0.9,
+        });
+
+        // 动态涟漪 (基于世界坐标和时间)
+        const pos = positionWorld.xz;
+        const t = time.mul(1.5); // 加快时间流速，增强流动感
+        
+        // 模拟风向/水流方向 (向东北方流动)
+        const flowDir = vec2(0.5, 0.2);
+        // 坐标反向移动 = 纹理正向移动
+        const flowPosMain = pos.sub(flowDir.mul(t)); 
+        const flowPosSec = pos.sub(vec2(0.2, 0.5).mul(t.mul(0.7))); // 次级波浪流速稍慢
+
+        // 多层正弦波模拟自然的无规则水波
+        // Wave 1: 主波浪 (流动)
+        const wave1 = sin(flowPosMain.x.mul(0.4).add(t.mul(0.2)))
+            .mul(sin(flowPosMain.y.mul(0.3).add(t.mul(0.3))));
+        
+        // Wave 2: 次级干涉波 (流动方向不同)
+        const wave2 = sin(flowPosSec.x.mul(1.2))
+            .mul(sin(flowPosSec.y.mul(1.5).add(t.mul(0.5))));
+            
+        // Wave 3: 高频细节 (快速闪烁)
+        const wave3 = sin(pos.x.mul(5.0).add(t.mul(4.0)))
+            .mul(sin(pos.y.mul(4.5).sub(t.mul(3.0))));
+        
+        // 混合波浪
+        const ripple = wave1.mul(1.0).add(wave2.mul(0.5)).add(wave3.mul(0.2));
+        
+        // 法线扰动强度 (增强明显度)
+        const strength = float(0.25);
+        
+        // 雨滴涟漪 (Rain Ripples) - 视觉增强版
+        const rainStrength = this.rainIntensity.mul(1.0); // 全强度
+        const rainTime = time.mul(8.0); // 快速闪烁
+        const rainScale = float(25.0);  // 高密度
+
+        // 生成高频干涉图案 -> 通过 pow 锐化成点状
+        const rainNoise1 = sin(pos.x.mul(rainScale).add(rainTime)).mul(sin(pos.y.mul(rainScale).sub(rainTime.mul(0.8))));
+        const rainNoise2 = sin(pos.x.mul(rainScale.mul(1.2)).sub(rainTime.mul(1.1))).mul(sin(pos.y.mul(rainScale.mul(1.3)).add(rainTime.mul(0.5))));
+        
+        // 锐化噪声以形成独立的雨滴点 (Splashes)
+        // 只有当 rainIntensity > 0 时才显示
+        const rainDroplets = max(rainNoise1.add(rainNoise2), float(0.0)).pow(float(4.0)).mul(rainStrength);
+
+        // 主波浪产生的倾斜 (需要保留)
+        const slopeX = cos(flowPosMain.x.mul(0.4)).mul(0.5)
+            .add(cos(flowPosSec.x.mul(1.2)).mul(0.5));
+            
+        const slopeZ = cos(flowPosMain.y.mul(0.3)).mul(0.5)
+            .add(cos(flowPosSec.y.mul(1.5)).mul(0.5));
+        
+        // 雨滴造成的强烈法线扰动
+        const nX = slopeX.mul(strength).add(fract(time.mul(2)).mul(0.01))
+            .add(rainDroplets.mul(0.2)); // 增强法线扰动
+        const nZ = slopeZ.mul(strength)
+            .add(rainDroplets.mul(0.2)); 
+        
+        material.normalNode = normalize(vec3(nX, float(1.0), nZ));
+
+        // ========== 岸边泡沫效果 (Shoreline Foam) ==========
+        // 重复地形生成逻辑以获得当前点的地形高度
+        // 注意: 必须保持与 computeNoiseHeight 完全一致的参数
+        const scale1 = float(0.015);
+        const scale2 = float(0.04);
+        
+        const distFromCenter = positionWorld.xz.length();
+        const centerFlatten = max(float(0.2), min(float(1.0), distFromCenter.sub(10).div(40)));
+        
+        const noise1 = sin(positionWorld.x.mul(scale1).mul(1.1).add(0.5)).mul(cos(positionWorld.z.mul(scale1).mul(0.9).add(0.3)));
+        const noise2 = sin(positionWorld.x.mul(scale2).mul(1.3).add(1.2)).mul(cos(positionWorld.z.mul(scale2).mul(1.1).add(0.7))).mul(0.5);
+        
+        const combinedNoise = noise1.add(noise2);
+        const terrainHeight = combinedNoise.mul(MapConfig.terrainHeight).mul(centerFlatten);
+        
+        // 计算水深: 水面高度 - 地形高度
+        // 如果 terrainHeight > waterLevel, depth < 0, 说明在岸上
+        const waterLevel = float(EnvironmentConfig.water.level);
+        const depth = waterLevel.sub(terrainHeight);
+        
+        // 泡沫区域: 水深在 [0, 0.8] 范围内产生泡沫
+        const foamThreshold = float(0.8);
+        const foamMask = smoothstep(foamThreshold, float(0.0), depth); // 越浅越接近1
+        
+        // 增加泡沫的动态噪声
+        const foamNoise = sin(pos.x.mul(10).add(t)).mul(sin(pos.z.mul(10).sub(t)));
+        const dynamicFoam = foamMask.mul(foamNoise.add(1.0).mul(0.5)).step(0.4); // 硬边泡沫
+        
+        // 波峰泡沫: 在波浪最高处增加泡沫
+        const crestFoam = ripple.step(0.8).mul(0.5); // 波浪值 > 0.8 时显示泡沫
+        
+        // 混合泡沫颜色
+        const foamColor = vec3(1.0, 1.0, 1.0); // 纯白泡沫
+        const totalFoam = max(dynamicFoam, crestFoam);
+        
+        // 雨滴产生的白色水花 (White Splashes)
+        // 使用 step 函数硬切断，使得水花边缘清晰
+        const rainSplashes = step(float(0.7), rainDroplets).mul(0.8);
+        
+        // 最终颜色混合: 基础水色 + 泡沫 + 雨滴水花
+        const waterBaseColor = new THREE.Color(EnvironmentConfig.water.color);
+        const colorVec = vec3(waterBaseColor.r, waterBaseColor.g, waterBaseColor.b);
+        
+        // 混合顺序: 颜色 -> 泡沫 -> 雨滴
+        const colorWithFoam = mix(colorVec, foamColor, totalFoam);
+        material.colorNode = mix(colorWithFoam, foamColor, rainSplashes);
+        
+        // ========== 更加物理真实的透明度 (Murky Water) ==========
+        // 1. Beer's Law (深度吸收): 深度越深，透明度越低
+        // alpha = 1 - e^(-density * depth)
+        const density = float(0.8); // 水的浑浊度
+        const absorption = sub(float(1.0), exp(depth.mul(density).negate()));
+        
+        // 2. Fresnel Effect (菲涅尔效应): 视线角度越平，水面越不透明(反射越强)
+        // dot(normalView, vec3(0,0,1)) 是视线夹角的余弦
+        const viewZ = dot(normalView, vec3(0, 0, 1)); // View space normal . View Vector (0,0,1)
+        const fresnel = pow(sub(float(1.0), abs(viewZ)), float(4.0)); // Power controls falloff
+        
+        // 组合透明度: 吸收 + 菲涅尔 + 泡沫 (泡沫总是不透明)
+        const murkyOpacity = max(absorption, fresnel.mul(0.6)); // Fresnel 不完全不透明
+        const finalOpacity = max(murkyOpacity, totalFoam).mul(EnvironmentConfig.water.opacity);
+        
+        material.opacityNode = finalOpacity;
+        
+        const waterMesh = new THREE.Mesh(geometry, material);
+        waterMesh.position.y = EnvironmentConfig.water.level;
+        waterMesh.receiveShadow = true;
+        
+        // 确保水面不遮挡半透明粒子(如果有)
+        waterMesh.renderOrder = 0; 
+        
+        this.scene.add(waterMesh);
+        // 不加入 objects 列表，防止被自动销毁或碰撞检测错误
     }
     
     /**
@@ -60,64 +283,84 @@ export class Level {
 
     /**
      * 创建地板 - 带起伏的地形
+     * 使用分块生成 (Chunk System) 以支持大地图 Frustum Culling
      */
     private createFloor() {
-        // 使用更多细分以支持地形起伏
-        const geometry = new THREE.PlaneGeometry(
-            MapConfig.size, 
-            MapConfig.size, 
-            MapConfig.terrainSegments, 
-            MapConfig.terrainSegments
-        );
+        // 全局计算高度图数据 (Truth Data)
+        this.initTerrainData();
         
+        // 创建分块 (Chunks)
+        const chunkSize = MapConfig.chunkSize;
+        const totalSize = MapConfig.size;
+        const chunksPerRow = Math.ceil(totalSize / chunkSize);
+        const segmentPerChunk = Math.floor(MapConfig.terrainSegments / chunksPerRow);
+        
+        const halfSize = totalSize / 2;
+        
+        for (let x = 0; x < chunksPerRow; x++) {
+            for (let z = 0; z < chunksPerRow; z++) {
+                // 当前块的中心位置
+                const centerX = (x * chunkSize) - halfSize + (chunkSize / 2);
+                const centerZ = (z * chunkSize) - halfSize + (chunkSize / 2);
+                
+                // 创建该块的几何体
+                const geometry = new THREE.PlaneGeometry(
+                    chunkSize, 
+                    chunkSize, 
+                    segmentPerChunk, 
+                    segmentPerChunk
+                );
+                
+                // 调整顶点高度 (基于预计算的数据)
+                const posAttribute = geometry.attributes.position;
+                for (let i = 0; i < posAttribute.count; i++) {
+                    // Local position
+                    const lx = posAttribute.getX(i);
+                    const lz = -posAttribute.getY(i); // PlaneGeometry 是 XY 平面，旋转后 Y 变 -Z
+                    
+                    // World position (Original unrotated Z = -Y)
+                    const wx = centerX + lx;
+                    const wz = centerZ + lz;
+                    
+                    // 获取高度
+                    const h = this.getTerrainHeight(wx, wz);
+                    
+                    // 设置 Z (旋转前的 Z 是高度)
+                    posAttribute.setZ(i, h);
+                }
+                
+                geometry.computeVertexNormals();
+                
+                const mesh = new THREE.Mesh(geometry, this.floorMaterial);
+                mesh.rotation.x = -Math.PI / 2;
+                mesh.position.set(centerX, 0, centerZ);
+                mesh.receiveShadow = true;
+                
+                // 标记为地面
+                mesh.userData = { isGround: true };
+                
+                this.scene.add(mesh);
+            }
+        }
+    }
+    
+    /**
+     * 初始化地形高度数据
+     */
+    private initTerrainData() {
         // 初始化高度图数组 (Rows x Cols)
-        // 顶点数 = segments + 1
         const gridSize = MapConfig.terrainSegments + 1;
         this.terrainHeights = new Float32Array(gridSize * gridSize);
         const halfSize = MapConfig.size / 2;
 
-        // 1. 先生成高度数据 (作为真理数据源)
         for (let iz = 0; iz < gridSize; iz++) {
             for (let ix = 0; ix < gridSize; ix++) {
-                // 网格坐标转世界坐标
-                // x = ix * segmentSize - halfSize
                 const worldX = ix * this.terrainSegmentSize - halfSize;
                 const worldZ = iz * this.terrainSegmentSize - halfSize;
-                
                 const height = this.computeNoiseHeight(worldX, worldZ);
                 this.terrainHeights[iz * gridSize + ix] = height;
             }
         }
-        
-        // 2. 将高度数据应用到网格上 (确保网格完全匹配高度图)
-        const positions = geometry.attributes.position;
-        
-        for (let i = 0; i < positions.count; i++) {
-            const x = positions.getX(i);
-            const y = positions.getY(i); 
-            
-            // PlaneGeometry 旋转 -90度后，局部 Y 轴变为世界 Z 轴的负方向
-            const worldZ = -y;
-            
-            // 计算对应的网格索引 (精确查找)
-            const ix = Math.round((x + halfSize) / this.terrainSegmentSize);
-            const iz = Math.round((worldZ + halfSize) / this.terrainSegmentSize);
-            
-            if (ix >= 0 && ix < gridSize && iz >= 0 && iz < gridSize) {
-                // 直接从高度图读取，而不是重新计算，消除任何潜在的不一致
-                const height = this.terrainHeights[iz * gridSize + ix];
-                positions.setZ(i, height); 
-            }
-        }
-        
-        geometry.computeVertexNormals();
-        geometry.attributes.position.needsUpdate = true;
-
-        const plane = new THREE.Mesh(geometry, this.floorMaterial);
-        plane.rotation.x = -Math.PI / 2;
-        plane.receiveShadow = true;
-        plane.userData = { isGround: true };
-        this.scene.add(plane);
     }
     
     /**
@@ -285,7 +528,17 @@ export class Level {
         
         const finalColor = withStains.add(surfaceDetail);
         
-        material.colorNode = finalColor;
+        // ========== 水边湿润效果 ==========
+        const waterHeight = float(EnvironmentConfig.water.level);
+        // 水面以上 1.5 米范围内逐渐变干
+        const wetZone = smoothstep(waterHeight.add(1.5), waterHeight.sub(0.2), worldPos.y); 
+        // 湿润的地面变暗
+        const wetColor = finalColor.mul(0.5);
+        
+        material.colorNode = mix(finalColor, wetColor, wetZone);
+        
+        // 湿润的地面更光滑
+        material.roughnessNode = mix(float(0.92), float(0.3), wetZone);
         
         // ========== 法线变化模拟凹凸 (更强的凹凸) ==========
         // 降低 bump 强度，因为物理地形已经足够丰富
@@ -515,6 +768,9 @@ export class Level {
             
             // 获取地形高度
             const groundY = this.getTerrainHeight(p.x, p.z);
+            
+            // 避免在水里生成障碍物
+            if (groundY < EnvironmentConfig.water.level + 0.5) return;
             
             // 嵌入地面深度 (防止因地形起伏导致的悬空)
             const embedDepth = 0.5;
@@ -1008,6 +1264,8 @@ export class Level {
             this.objects.push(rightMesh);
             
             const groundH = this.getTerrainHeight(pos.x, pos.z);
+            if (groundH < EnvironmentConfig.water.level + 0.5) return;
+
             // 稍微嵌入地面确保底部不悬空
             group.position.set(pos.x, groundH - 0.2, pos.z);
             group.rotation.y = pos.rotation;
@@ -1096,9 +1354,11 @@ export class Level {
         const embedDepth = 0.3; // 油桶嵌入深度
         
         barrelPositions.forEach((pos, index) => {
-            const barrel = new THREE.Mesh(barrelGeo, barrelMaterial);
             // 获取地形高度
             const groundY = this.getTerrainHeight(pos.x, pos.z);
+            if (groundY < EnvironmentConfig.water.level + 0.5) return;
+
+            const barrel = new THREE.Mesh(barrelGeo, barrelMaterial);
             barrel.position.set(pos.x, groundY + 0.6 - embedDepth, pos.z);
             
             barrel.rotation.y = index * 0.7;
