@@ -1,6 +1,8 @@
 这个tauri 桌面项目打算基于 three.js 的 TSL(webgpu) 做一个类似于 绝地求生 的 fps 游戏，
 先做单人的，之后再打算做多人
 
+项目主要用最新版本的three.js 的 TSL 写shader，能写shader的地方就尽量用shader，计算的地方能用compute shader就用compute shader
+
 css 用 tailwindcss
 游戏代码用 vanilla three，不要用 react组件的 three
 
