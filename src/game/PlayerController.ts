@@ -221,6 +221,9 @@ export class PlayerController {
     private initPointerLock() {
         // 点击获取指针锁定
         this.domElement.addEventListener('click', (event) => {
+            // 确保音频上下文已恢复 (用户交互后才能播放声音)
+            SoundManager.getInstance().resume();
+
             if (!this.isLocked) {
                 this.domElement.requestPointerLock();
             }
@@ -431,7 +434,22 @@ export class PlayerController {
         document.addEventListener('keyup', onKeyUp);
     }
 
+    private frameCount: number = 0;
+
+    public resetPhysics() {
+        this.velocity.set(0, 0, 0);
+        this.canJump = true;
+        this.visualYOffset = 0;
+    }
+
     public update(delta: number) {
+        // Debug Log every 60 frames
+        this.frameCount++;
+        if (this.frameCount % 60 === 0) {
+            console.log(`[PlayerController] Delta: ${delta.toFixed(4)}, Pos: (${this.camera.position.x.toFixed(2)}, ${this.camera.position.y.toFixed(2)}, ${this.camera.position.z.toFixed(2)}), Vel: (${this.velocity.x.toFixed(2)}, ${this.velocity.y.toFixed(2)}, ${this.velocity.z.toFixed(2)}), CanJump: ${this.canJump}, GroundHeight: ${this.onGetGroundHeight ? this.onGetGroundHeight(this.camera.position.x, this.camera.position.z).toFixed(2) : 'N/A'}`);
+            if (this.isLocked) console.log(`[PlayerController] Movement Inputs: F:${this.moveForward} B:${this.moveBackward} L:${this.moveLeft} R:${this.moveRight}`);
+        }
+
         // 更新武器动画
         this.weapon.update(delta);
         
@@ -509,6 +527,7 @@ export class PlayerController {
             this.camera.position.x += dx;
             let collisionBox = this.checkCollisions(true); // Use skinWidth for horizontal
             if (collisionBox) {
+                if (this.frameCount % 60 === 0) console.log("[PlayerController] Hit Object X:", collisionBox);
                 // 保存碰撞点的障碍物信息
                 const obstacleTop = collisionBox.max.y;
                 this.camera.position.x -= dx;
@@ -520,6 +539,7 @@ export class PlayerController {
             this.camera.position.z += dz;
             collisionBox = this.checkCollisions(true); // Use skinWidth for horizontal
             if (collisionBox) {
+                if (this.frameCount % 60 === 0) console.log("[PlayerController] Hit Object Z:", collisionBox);
                 // 保存碰撞点的障碍物信息
                 const obstacleTop = collisionBox.max.y;
                 this.camera.position.z -= dz;
@@ -540,7 +560,7 @@ export class PlayerController {
                      // Check if we were above the object (landing)
                      const previousFeetY = previousY - currentCameraOffset;
                      // Tolerance of 0.1m to handle fast falling or slight penetration
-                     if (previousFeetY >= collisionBoxY.max.y - 0.1) {
+                     if (previousFeetY >= collisionBoxY.max.y - 0.2) { // 增加容错到0.2
                          this.canJump = true;
                          this.velocity.y = 0;
                          // Snap to top
@@ -549,6 +569,11 @@ export class PlayerController {
                          // Hit side or bottom while falling? Revert.
                          this.camera.position.y = previousY;
                          this.velocity.y = 0;
+                         // FIXME: 防止卡在空中，如果没有水平速度
+                         if (Math.abs(this.velocity.x) < 0.1 && Math.abs(this.velocity.z) < 0.1) {
+                             // 如果卡在物体内部，尝试向上弹一点
+                             this.camera.position.y += 0.1;
+                         }
                      }
                  } 
                  else if (this.velocity.y > 0) {

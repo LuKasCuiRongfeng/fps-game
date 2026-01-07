@@ -1,3 +1,5 @@
+import { SoundConfig } from './GameConfig';
+
 export class SoundManager {
     private static instance: SoundManager;
     private audioContext: AudioContext;
@@ -8,12 +10,23 @@ export class SoundManager {
     private weatherNodes: (OscillatorNode | AudioBufferSourceNode)[] = [];
     private currentWeatherSound: string | null = null;
     private weatherCleanupId: number = 0;  // 用于标识清理操作
+    
+    // 背景音乐系统 (Procedural Generators)
+    private bgmGain: GainNode;
+    private bgmNodes: OscillatorNode[] = [];
+    private currentBGMState: 'none' | 'sunny' | 'rainy' | 'combat' = 'none';
+    private bgmIntervalId: number = 0;
 
     private constructor() {
         this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
         this.masterGain = this.audioContext.createGain();
-        this.masterGain.gain.value = 0.3; // Master volume
+        this.masterGain.gain.value = SoundConfig.masterVolume; // Master volume
         this.masterGain.connect(this.audioContext.destination);
+        
+        // 独立的 BGM 音量控制
+        this.bgmGain = this.audioContext.createGain();
+        this.bgmGain.gain.value = SoundConfig.bgmVolume; // BGM Volume
+        this.bgmGain.connect(this.masterGain);
     }
 
     public static getInstance(): SoundManager {
@@ -23,10 +36,276 @@ export class SoundManager {
         return SoundManager.instance;
     }
 
+    /**
+     * 设置背景音乐状态
+     */
+    public setBGMState(state: 'sunny' | 'rainy' | 'combat') {
+        if (this.currentBGMState === state) return;
+        
+        console.log(`BGM State Switch: ${this.currentBGMState} -> ${state}`);
+        this.currentBGMState = state;
+        
+        // 停止之前的生成器
+        if (this.bgmIntervalId) {
+            window.clearInterval(this.bgmIntervalId);
+            this.bgmIntervalId = 0;
+        }
+        
+        // 停止之前的音频节点 (淡出)
+        const oldNodes = [...this.bgmNodes];
+        this.bgmNodes = [];
+        
+        const now = this.audioContext.currentTime;
+        oldNodes.forEach(node => {
+            try {
+                // 如果节点直接连接了 gain，需要找到那个 gain 进行淡出
+                // 这里简化处理: node 直接停止或让他自然结束
+                // 更好的做法是每个音符自带 Envelope，这里我们不管旧音符，让它自己播放完 (Reverb-like)
+                // 除非是长时间的 Drone，需要强行淡出
+                // 由于我们下面的生成器主要产生短音符或长 Drone，长 Drone 需要手动停止
+                if ((node as any).stopWait) {
+                     node.stop(now + 2);
+                }
+            } catch (e) {}
+        });
+
+        // 启动新的生成器
+        this.resume();
+        switch (state) {
+            case 'sunny':
+                this.startSunnyBGM();
+                break;
+            case 'rainy':
+                this.startRainyBGM();
+                break;
+            case 'combat':
+                this.startCombatBGM();
+                break;
+        }
+    }
+
+    // 辅助: 播放一个带有包络的音符 (ADSR)
+    private playNote(freq: number, type: OscillatorType, duration: number, vol: number = 0.5, attack: number = 0.1, release: number = 0.5) {
+        const osc = this.audioContext.createOscillator();
+        const gain = this.audioContext.createGain();
+        const now = this.audioContext.currentTime;
+
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, now);
+
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(vol, now + attack);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + duration + release);
+
+        osc.connect(gain);
+        gain.connect(this.bgmGain);
+
+        osc.start(now);
+        osc.stop(now + duration + release);
+        
+        return osc;
+    }
+
+    /**
+     * 晴天音乐: 欢快、轻松、Major Scale
+     * 风格: Ambient / Light Pluck
+     */
+    private startSunnyBGM() {
+        const config = SoundConfig.bgm.sunny;
+        const majorScale = config.scale; // C Major
+        
+        // 1. 底层 Drone (长音垫) - 温暖的正弦波
+        const playDrone = () => {
+             // 防止 AudioContext 挂起时堆积太多 Oscillator
+             if (this.audioContext.state === 'suspended') return;
+             
+            const osc = this.audioContext.createOscillator();
+            const gain = this.audioContext.createGain();
+            const now = this.audioContext.currentTime;
+            
+            osc.frequency.setValueAtTime(config.drone.freq, now); // C3
+            osc.type = 'sine';
+            
+            gain.gain.setValueAtTime(0, now);
+            gain.gain.linearRampToValueAtTime(config.drone.volume, now + 2); 
+            gain.gain.setValueAtTime(config.drone.volume, now + config.drone.duration - 2);
+            gain.gain.linearRampToValueAtTime(0, now + config.drone.duration);
+            
+            osc.connect(gain);
+            gain.connect(this.bgmGain);
+            
+            osc.start(now);
+            osc.stop(now + config.drone.duration);
+            (osc as any).stopWait = true;
+            this.bgmNodes.push(osc);
+        };
+        
+        // 2. 随机旋律 (Arpeggio)
+        const playMelody = () => {
+            if (this.audioContext.state === 'suspended') return;
+            
+            if (Math.random() > (1 - config.melody.probability)) {
+                const note = majorScale[Math.floor(Math.random() * majorScale.length)];
+                // 偶尔高八度
+                const pitch = Math.random() > 0.8 ? note * 2 : note;
+                this.playNote(pitch, 'triangle', 0.5, config.melody.volume, 0.05, 1.0); 
+            }
+        };
+
+        // 初始播放
+        playDrone();
+        
+        // 循环逻辑
+        let tick = 0;
+        this.bgmIntervalId = window.setInterval(() => {
+            tick++;
+            if (tick % config.interval.droneTick === 0) playDrone(); 
+            if (tick % config.interval.melodyTick === 0) playMelody(); 
+        }, config.interval.loop);
+    }
+
+    /**
+     * 雨天音乐: 忧郁、缓慢、Minor Scale
+     * 风格: Sad Piano / Pad
+     */
+    private startRainyBGM() {
+         const config = SoundConfig.bgm.rainy;
+         const minorScale = config.scale; // A Minor
+         
+         // 1. 深沉 Drone
+         const playDarkPad = () => {
+             if (this.audioContext.state === 'suspended') return;
+             
+            const osc = this.audioContext.createOscillator();
+            const gain = this.audioContext.createGain();
+            const now = this.audioContext.currentTime;
+            
+            osc.frequency.setValueAtTime(config.drone.freq, now); // A2
+            osc.type = 'triangle'; // 稍微粗糙一点
+            
+            // 低通滤波器让声音变闷
+            const filter = this.audioContext.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.value = config.drone.filterFreq;
+            
+            gain.gain.setValueAtTime(0, now);
+            gain.gain.linearRampToValueAtTime(config.drone.volume, now + 3); 
+            gain.gain.setValueAtTime(config.drone.volume, now + config.drone.duration - 3);
+            gain.gain.linearRampToValueAtTime(0, now + config.drone.duration);
+            
+            osc.connect(filter);
+            filter.connect(gain);
+            gain.connect(this.bgmGain);
+            
+            osc.start(now);
+            osc.stop(now + config.drone.duration);
+            (osc as any).stopWait = true;
+            this.bgmNodes.push(osc);
+        };
+        
+        // 2. 也是旋律，但更稀疏，更慢
+        const playSadNote = () => {
+            if (this.audioContext.state === 'suspended') return;
+            
+             if (Math.random() > (1 - config.melody.probability)) { // > 0.6
+                const note = minorScale[Math.floor(Math.random() * minorScale.length)];
+                // 使用 Sine 模拟类似 Rhodes/Piano 的柔和感
+                this.playNote(note, 'sine', 1.5, config.melody.volume, 0.1, 2.0); 
+            }
+        };
+
+        playDarkPad();
+        
+        let tick = 0;
+        this.bgmIntervalId = window.setInterval(() => {
+            tick++;
+            if (tick % config.interval.droneTick === 0) playDarkPad();
+            if (tick % config.interval.melodyTick === 0) playSadNote();
+        }, config.interval.loop);
+    }
+
+    /**
+     * 战斗音乐: 紧张、快速、不协和
+     * 风格: Ostinato / Bass Pulse
+     */
+    private startCombatBGM() {
+        const config = SoundConfig.bgm.combat;
+
+        // 1. 紧张的 Bass Pulse (类似心跳或急促的低音)
+        const playBassPulse = () => {
+             if (this.audioContext.state === 'suspended') return;
+
+             const osc = this.audioContext.createOscillator();
+             const gain = this.audioContext.createGain();
+             const now = this.audioContext.currentTime;
+             
+             osc.frequency.setValueAtTime(config.bass.freq, now); // A1
+             osc.type = 'sawtooth';
+             
+             // 低通滤波，随着时间打开 (Filter Sweep)
+             const filter = this.audioContext.createBiquadFilter();
+             filter.type = 'lowpass';
+             filter.frequency.setValueAtTime(config.bass.filterStart, now);
+             filter.frequency.linearRampToValueAtTime(config.bass.filterEnd, now + 0.1);
+             
+             gain.gain.setValueAtTime(config.bass.volume, now); 
+             gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+             
+             osc.connect(filter);
+             filter.connect(gain);
+             gain.connect(this.bgmGain);
+             
+             osc.start(now);
+             osc.stop(now + 0.2);
+        };
+        
+        // 2. 高频不协和音 (警报感)
+        const playAlarm = () => {
+             if (this.audioContext.state === 'suspended') return;
+
+             if (Math.random() > (1 - config.alarm.probability)) return;
+             
+             const osc = this.audioContext.createOscillator();
+             const gain = this.audioContext.createGain();
+             const now = this.audioContext.currentTime;
+             
+             // 两个靠的很近的频率产生 "Beat" (拍频)，制造听觉不适/紧张感
+             const freq = Math.random() > 0.5 ? config.alarm.freq1 : config.alarm.freq2; 
+             osc.frequency.setValueAtTime(freq, now);
+             osc.frequency.linearRampToValueAtTime(freq - 10, now + 0.5); // Pitch bend down
+             
+             osc.type = 'square';
+             
+             gain.gain.setValueAtTime(config.alarm.volume, now); 
+             gain.gain.linearRampToValueAtTime(0, now + 0.5);
+             
+             osc.connect(gain);
+             gain.connect(this.bgmGain);
+             
+             osc.start(now);
+             osc.stop(now + 0.5);
+        };
+
+        // 快速循环 (每 250ms = 240 BPM 1/4拍)
+        this.bgmIntervalId = window.setInterval(() => {
+            playBassPulse();
+            if (Math.random() > 0.5) playAlarm(); // Use internal random for beat placement
+        }, config.interval);
+    }
+
     // Ensure AudioContext is resumed (browsers block auto-play)
     public async resume() {
         if (this.audioContext.state === 'suspended') {
             await this.audioContext.resume();
+            
+            // 如果恢复成功，且当前有 BGM 状态，重启 BGM 以便立即听到声音
+            // 否则可能会因为 'suspended' check 跳过初始播放，导致长达数秒的静音
+            // 使用 type assertion 绕过 TS 的静态分析 (因为 await 改变了状态)
+            if ((this.audioContext.state as AudioContextState) === 'running' && this.currentBGMState !== 'none') {
+                const savedState = this.currentBGMState;
+                this.currentBGMState = 'none'; // 强制状态重置
+                this.setBGMState(savedState);
+            }
         }
     }
 
@@ -47,7 +326,16 @@ export class SoundManager {
         osc.stop(this.audioContext.currentTime + startTime + duration);
     }
 
+    private lastShootTime: number = 0;
+    private readonly SHOOT_THROTTLE: number = SoundConfig.weapon.shoot.throttle; // ms
+
     public playShoot() {
+        const now = Date.now();
+        if (now - this.lastShootTime < this.SHOOT_THROTTLE) {
+            return;
+        }
+        this.lastShootTime = now;
+
         this.resume();
         // Pew pew sound
         const osc = this.audioContext.createOscillator();
@@ -57,7 +345,7 @@ export class SoundManager {
         osc.frequency.setValueAtTime(800, this.audioContext.currentTime);
         osc.frequency.exponentialRampToValueAtTime(100, this.audioContext.currentTime + 0.1);
 
-        gain.gain.setValueAtTime(0.5, this.audioContext.currentTime);
+        gain.gain.setValueAtTime(SoundConfig.weapon.shoot.volume, this.audioContext.currentTime);
         gain.gain.exponentialRampToValueAtTime(0.01, this.audioContext.currentTime + 0.1);
 
         osc.connect(gain);

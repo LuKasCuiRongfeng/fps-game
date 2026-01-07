@@ -58,16 +58,14 @@ export class TreeSystem {
         const chunksPerRow = Math.ceil(mapSize / chunkSize);
         const halfSize = mapSize / 2;
 
-        // 计算密度和每块的数量
-        // 基础参考: 200x200 (40000m2) 地图约 1200 棵树 => 0.03 棵/m2
-        // 大地图 800x800 => 需要 19200 棵
-        // 为了平衡性能，我们稍微降低一点密度系数到 0.02
-        const density = 0.02; 
+        // 恢复高密度植被
+        // 由于我们会限制生成范围仅在岛屿上，所以可以使用较高的密度
+        const density = 0.02; // 每平方米0.02棵树，约等于每50平方米1棵
         
         // 计算每块(Chunk)的目标树木数量
         const treesPerChunk = Math.floor((chunkSize * chunkSize) * density);
         
-        console.log(`Generating Trees: Map=${mapSize}, Chunk=${chunkSize}, PerChunk=${treesPerChunk}, TotalChunks=${chunksPerRow*chunksPerRow}`);
+        console.log(`Generating Trees: Map=${mapSize}, Chunk=${chunkSize}, PerChunk=${treesPerChunk} (Density: ${density})`);
 
         for (let x = 0; x < chunksPerRow; x++) {
             for (let z = 0; z < chunksPerRow; z++) {
@@ -88,6 +86,17 @@ export class TreeSystem {
         getHeightAt: (x: number, z: number) => number, 
         excludeAreas: any[]
     ) {
+        // 性能优化：严格限制生成范围
+        // 岛屿半径外是深海，不需要生成树木
+        // 稍微加一点缓冲 (50m) 防止边缘穿帮，但不需要加500m
+        const maxTreeDist = MapConfig.boundaryRadius + 50; 
+        
+        // 如果整个 Chunk 的中心离原点太远，直接跳过
+        // 粗略判断: Chunk中心距离 > 半径 + Chunk一半大小
+        if (cx * cx + cz * cz > (maxTreeDist + size/2) * (maxTreeDist + size/2)) {
+            return;
+        }
+
         // 为该 Chunk 创建独立的 InstancedMesh
         const trunkMesh = new THREE.InstancedMesh(this.trunkGeometry, this.trunkMaterial, count);
         const leavesMesh = new THREE.InstancedMesh(this.leavesGeometry, this.leavesMaterial, count);

@@ -45,6 +45,7 @@ export class Game {
     // 计时器
     private spawnTimer: number = 0;
     private pickupSpawnTimer: number = 0;
+    private initialPickupsSpawned: boolean = false;
     
     // 系统
     private physicsSystem!: PhysicsSystem;
@@ -69,10 +70,34 @@ export class Game {
     private frameCount: number = 0;
     private lastFpsUpdate: number = 0;
     private currentFps: number = 60;
+    
+    
+    // 加载回调
+    private onProgressCallback?: (progress: number, desc: string) => void;
+    private onLoadedCallback?: () => void;
+    private hasLoaded: boolean = false;
 
-    constructor(container: HTMLElement) {
+    constructor(container: HTMLElement, onLoaded?: () => void, onProgress?: (progress: number, desc: string) => void) {
         this.container = container;
+        this.onLoadedCallback = onLoaded;
+        this.onProgressCallback = onProgress;
         this.clock = new THREE.Clock();
+        
+        // 异步初始化流程，以支持进度更新
+        this.initGame();
+    }
+
+    private updateProgress(progress: number, desc: string) {
+        if (this.onProgressCallback) {
+            this.onProgressCallback(progress, desc);
+        }
+        // 简单的延迟，让 UI 有机会渲染 (在同步代码中这其实并不真正让出主线程，但对于步骤间的逻辑分隔有用)
+        // 在 React 的 useEffect 中使用 setTimeout 才是真正让出主线程的关键
+    }
+
+    private async initGame() {
+        this.updateProgress(10, 'Initializing WebGPU Renderer...');
+        
         this.uniformManager = UniformManager.getInstance();
 
         // 初始化 WebGPU 渲染器
@@ -88,11 +113,14 @@ export class Game {
         this.renderer.toneMappingExposure = 1.0;
         this.container.appendChild(this.renderer.domElement);
 
+        this.updateProgress(20, 'Setting up Scene & Lighting...');
+
         // 初始化场景
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0x87ceeb);
-        // 扩大雾气距离以适应大地图
-        this.scene.fog = new THREE.Fog(0x87ceeb, 30, 150);
+        // 扩大雾气距离以适应无尽海域
+        // Fog 颜色需要和天空/地平线混合好
+        this.scene.fog = new THREE.Fog(0x87ceeb, 100, 700);
 
         // 光照
         this.setupLighting();
@@ -102,10 +130,12 @@ export class Game {
             75, 
             window.innerWidth / window.innerHeight, 
             0.1, 
-            500 // 增加远裁剪面以看到更远的物体
+            1500 // 增加远裁剪面以看到更远的物体 (海平面)
         );
         this.camera.position.set(0, 1.6, 5);
         this.scene.add(this.camera);
+
+        this.updateProgress(30, 'Initializing Physics & Level...');
 
         // 物理系统 (优化)
         this.physicsSystem = new PhysicsSystem();
@@ -113,15 +143,20 @@ export class Game {
         // 关卡
         this.level = new Level(this.scene, this.objects, this.physicsSystem);
 
+        this.updateProgress(45, 'Generating AI Pathfinding...');
+
         // 寻路系统
         this.pathfinding = new Pathfinding(this.objects);
 
+        this.updateProgress(55, 'Compiling Compute Shaders...');
         // GPU Compute 系统
         this.gpuCompute = new GPUComputeSystem(this.renderer, 100, 10000);
 
         // 粒子系统
         this.particleSystem = new GPUParticleSystem(this.renderer, this.scene, 50000);
         
+        this.updateProgress(65, 'Loading Effect Systems...');
+
         // 爆炸特效管理器 (高性能)
         this.explosionManager = new ExplosionManager(this.scene);
         
@@ -129,6 +164,8 @@ export class Game {
         this.weatherSystem = new WeatherSystem(this.scene, this.camera);
         this.weatherSystem.setLights(this.ambientLight, this.sunLight);
         this.weatherSystem.setWeather('sunny', true);  // 初始晴天
+
+        this.updateProgress(75, 'Initializing Player Controller...');
 
         // 玩家控制器
         this.playerController = new PlayerController(
@@ -168,25 +205,148 @@ export class Game {
 
         // 修复：初始化玩家位置，确保在地面之上
         const spawnX = 0;
-        const spawnZ = 5;
+        const spawnZ = 0; // 移动到0,0，确保在安全区中心
         const spawnHeight = this.level.getTerrainHeight(spawnX, spawnZ);
-        // 确保起步高度至少在地面上方 1.6米 (站立高度)
-        this.camera.position.set(spawnX, spawnHeight + 1.6, spawnZ);
+        // 确保起步高度至少在地面上方 1.6米 (站立高度) + 额外缓冲防止卡住
+        this.camera.position.set(spawnX, spawnHeight + 2.0, spawnZ);
+        
+        // 重置物理状态
+        this.playerController.resetPhysics();
+
+        this.updateProgress(85, 'Configuring Post-Processing...');
 
         // 后处理
         this.setupPostProcessing();
 
-        // 生成初始敌人和拾取物
-        this.spawnEnemy();
-        for (let i = 0; i < 5; i++) {
-            this.spawnPickup();
-        }
+        this.updateProgress(90, 'Spawning Entities...');
+
+        // 生成初始敌人和拾取物 (使用配置的初始延迟) - 恢复使用配置
+        this.spawnTimer = -LevelConfig.enemySpawn.initialDelay / 1000; 
+        
+        // 拾取物也延迟生成 - 恢复使用配置
+        this.pickupSpawnTimer = -LevelConfig.pickupSpawn.initialDelay / 1000;
 
         // 事件监听
         window.addEventListener('resize', this.onWindowResize.bind(this));
 
+        this.updateProgress(92, 'Pre-spawning dummy entities...');
+        
+        // 关键修复：生成并添加虚拟实体，确保它们的 Shader 在 Warmup 阶段也被编译
+        // 之前只 Warmup 了静态场景，导致敌人生成时产生的 Shader 编译导致卡顿
+        
+        // 1. 虚拟敌人
+        const dummyEnemy = new Enemy(new THREE.Vector3(0, -100, 0)); // 藏在地下
+        this.scene.add(dummyEnemy.mesh);
+        
+        // 2. 虚拟拾取物 (两种类型)
+        const dummyPickupHealth = new Pickup('health', new THREE.Vector3(2, -100, 0));
+        this.scene.add(dummyPickupHealth.mesh);
+        
+        const dummyPickupAmmo = new Pickup('ammo', new THREE.Vector3(4, -100, 0));
+        this.scene.add(dummyPickupAmmo.mesh);
+        
+        // 3. 虚拟手榴弹
+        const dummyGrenade = new Grenade(
+            new THREE.Vector3(6, -100, 0), 
+            new THREE.Vector3(0, 1, 0), 
+            0, this.scene, [], new THREE.Vector3(0,0,0)
+        );
+        // Grenade 构造函数已经将 mesh 添加到 scene (稍后确认 implementation, 但 GameTSL 使用时没有 add?)
+        // 检查 GameTSL.throwGrenade 实现：
+        // grenade = new Grenade(...)
+        // this.grenades.push(grenade) -> Grenade 内部处理 addToScene?
+        // 让我们手动添加以防万一，或者依赖 warmup
+        // 假设 Grenade 内部处理了
+        
+        // 强制更新这些物体的矩阵，确保它们被视作有效物体
+        dummyEnemy.mesh.updateMatrixWorld(true);
+        dummyPickupHealth.mesh.updateMatrixWorld(true);
+        dummyPickupAmmo.mesh.updateMatrixWorld(true);
+
+        this.updateProgress(95, 'Pre-compiling Shaders (Warmup)...');
+        
+        try {
+            // 强制编译场景中的材质，避免运行时旋转视角产生卡顿
+            // 这会遍历场景图并为当前相机编译所需的 pipeline
+            if (this.renderer.compileAsync) {
+                // 保存原始相机状态
+                const originalQuaternion = this.camera.quaternion.clone();
+                const originalPosition = this.camera.position.clone();
+
+                // 确保至少把太阳光和环境光加入到场景 (如果之前没加的话)
+                this.scene.updateMatrixWorld(true);
+                
+                // 模拟向四周看，确保视锥体覆盖所有方向的物体
+                const angles = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+                // 增加上下视角
+                const pitches = [0, -0.3, 0.3]; 
+
+                // 增加更多采样角度，确保覆盖所有物体
+                // 并强制渲染一帧到离屏缓冲 (dummy render) 以触发所有 buffer upload
+                for (const angle of angles) {
+                    for (const pitch of pitches) {
+                        this.camera.setRotationFromEuler(new THREE.Euler(pitch, angle, 0, 'YXZ'));
+                        this.camera.updateMatrixWorld();
+                        
+                        // 1. Compile Shaders
+                        await this.renderer.compileAsync(this.scene, this.camera);
+                    }
+                }
+                
+                // 恢复相机
+                this.camera.position.copy(originalPosition);
+                this.camera.quaternion.copy(originalQuaternion);
+                this.camera.updateMatrixWorld();
+
+                // 2. 暴力预热：强制渲染几帧以触发所有后处理和阴影管线
+                // CompileAsync 可能不会触发 PostProcessing 链中的所有 shader
+                this.updateProgress(97, 'Warming up Render Loop...');
+                for(let i = 0; i < 5; i++) {
+                     // 稍微旋转一点点相机，强制更新视锥体相关计算
+                    this.camera.rotateY(0.01);
+                    this.camera.updateMatrixWorld();
+                    
+                    // 更新部分系统
+                    this.uniformManager.update(0.016, this.camera.position, 100);
+                    this.gpuCompute.updateEnemies(0.016, this.camera.position);
+                    this.particleSystem.update(0.016);
+                    
+                    // 真实渲染 (触发 PostProcessing 等所有效果)
+                    await this.postProcessing.render();
+                    
+                    // 让出主线程一瞬间，防止浏览器认为页面卡死
+                    await new Promise(resolve => setTimeout(resolve, 10));
+                }
+                // 恢复相机
+                this.camera.position.copy(originalPosition);
+                this.camera.quaternion.copy(originalQuaternion);
+                this.camera.updateMatrixWorld();
+                
+                // 清理虚拟实体
+                this.scene.remove(dummyEnemy.mesh);
+                this.scene.remove(dummyPickupHealth.mesh);
+                this.scene.remove(dummyPickupAmmo.mesh);
+                dummyEnemy.dispose(); // 如果有 dispose
+                
+            } else {
+                // @ts-ignore - Fallback/Compat
+                await this.renderer.compile(this.scene, this.camera);
+            }
+        } catch (e) {
+            console.warn("Shader pre-compilation failed:", e);
+        }
+
+        this.updateProgress(98, 'Starting Render Loop...');
+
         // 启动渲染循环
         this.renderer.setAnimationLoop(this.animate.bind(this));
+        
+        // 标记加载完成
+        this.hasLoaded = true;
+        this.updateProgress(100, 'Game Loaded');
+        if (this.onLoadedCallback) {
+            this.onLoadedCallback();
+        }
     }
 
     /**
@@ -203,15 +363,26 @@ export class Game {
         this.sunLight.castShadow = true;
         
         // 阴影设置
-        this.sunLight.shadow.camera.top = 30;
-        this.sunLight.shadow.camera.bottom = -30;
-        this.sunLight.shadow.camera.left = -30;
-        this.sunLight.shadow.camera.right = 30;
+        // 优化：缩小阴影相机范围，只覆盖玩家周围近处的物体
+        // 远处的物体阴影由于分辨率不足也看不清，或者被雾遮挡，不如不要
+        // 或者使用 Cascaded Shadow Maps (CSM)，但 Three.js 原生不支持好的 CSM，需要额外库
+        // 作为一个简易优化，我们缩小范围
+        const shadowSize = 80;
+        this.sunLight.shadow.camera.top = shadowSize;
+        this.sunLight.shadow.camera.bottom = -shadowSize;
+        this.sunLight.shadow.camera.left = -shadowSize;
+        this.sunLight.shadow.camera.right = shadowSize;
         this.sunLight.shadow.camera.near = 0.5;
-        this.sunLight.shadow.camera.far = 100;
-        this.sunLight.shadow.mapSize.width = 2048;
-        this.sunLight.shadow.mapSize.height = 2048;
-        this.sunLight.shadow.bias = -0.0001;
+        this.sunLight.shadow.camera.far = 150; // 稍远一点，覆盖主要视线
+        
+        // 降低阴影分辨率，因为使用了 PCFSoftShadowMap，低分辨率也有柔化效果，反而性能更好
+        this.sunLight.shadow.mapSize.width = 1024;
+        this.sunLight.shadow.mapSize.height = 1024;
+        this.sunLight.shadow.bias = -0.0005;
+        
+        // 只有在光源位置会跟随玩家移动时，这么小的相机范围才有效
+        // 否则你需要一个巨大的相机来覆盖整个地图，那样分辨率会很惨
+        // 建议在 update 中让 sunLight 跟随 camera.position.xz 移动 (Snap to texel)
         
         this.scene.add(this.sunLight);
 
@@ -408,7 +579,9 @@ export class Game {
     private spawnEnemy() {
         const angle = Math.random() * Math.PI * 2;
         // 扩大生成半径范围以适应大地图
-        const radius = LevelConfig.enemySpawn.spawnRadius.min + Math.random() * (LevelConfig.enemySpawn.spawnRadius.max - LevelConfig.enemySpawn.spawnRadius.min);
+        // 确保最小生成半径大于安全区
+        const minRadius = Math.max(LevelConfig.enemySpawn.spawnRadius.min, LevelConfig.safeZoneRadius + 5);
+        const radius = minRadius + Math.random() * (LevelConfig.enemySpawn.spawnRadius.max - minRadius);
         const x = Math.cos(angle) * radius;
         const z = Math.sin(angle) * radius;
         
@@ -437,9 +610,27 @@ export class Game {
         if (this.pickups.length >= LevelConfig.pickupSpawn.maxPickups * 2) return; // 增加最大数量
 
         const type = Math.random() > 0.5 ? 'health' : 'ammo';
-        // 扩大拾取物生成范围
-        const x = (Math.random() - 0.5) * 150;
-        const z = (Math.random() - 0.5) * 150;
+        // 扩大拾取物生成范围，但避开安全区
+        let x = 0, z = 0;
+        let dist = 0;
+        
+        // 简单的随机生成并检查距离，尝试 10 次
+        for (let i = 0; i < 10; i++) {
+            x = (Math.random() - 0.5) * 150;
+            z = (Math.random() - 0.5) * 150;
+            dist = Math.sqrt(x * x + z * z);
+            if (dist > LevelConfig.safeZoneRadius) {
+                break;
+            }
+        }
+        
+        // 如果依然在安全区内 (极小概率)，强制移到安全区边缘
+        if (dist <= LevelConfig.safeZoneRadius) {
+            const angle = Math.random() * Math.PI * 2;
+            x = Math.cos(angle) * (LevelConfig.safeZoneRadius + 2);
+            z = Math.sin(angle) * (LevelConfig.safeZoneRadius + 2);
+        }
+
         const y = this.level.getTerrainHeight(x, z);
         
         const pickup = new Pickup(type, new THREE.Vector3(x, y, z));
@@ -477,6 +668,23 @@ export class Game {
         this.playerController.update(delta);
         const playerPos = this.camera.position;
         
+        // 优化：让阳光跟随玩家移动，保持阴影在玩家周围清晰
+        if (this.sunLight) {
+            // 计算纹素大小以通过对其网格来防止阴影闪烁 (Shadow Swimming)
+            const shadowSize = 80 * 2; // right - left
+            const mapSize = 1024;
+            const texelSize = shadowSize / mapSize;
+            
+            // 对齐到纹素网格
+            const x = Math.floor(playerPos.x / texelSize) * texelSize;
+            const z = Math.floor(playerPos.z / texelSize) * texelSize;
+            
+            // 保持相对偏移 (15, 30, 15)
+            this.sunLight.position.set(x + 15, 30, z + 15);
+            this.sunLight.target.position.set(x, 0, z);
+            this.sunLight.target.updateMatrixWorld();
+        }
+        
         // 更新瞄准状态 (用于后处理效果)
         const aimProgress = this.playerController.getAimProgress();
         this.scopeAimProgress.value = aimProgress;
@@ -493,8 +701,36 @@ export class Game {
         // 更新天气系统
         this.weatherSystem.update(delta);
         
+        // --- 背景音乐状态更新 ---
+        const sm = SoundManager.getInstance();
+        const currentWeather = this.weatherSystem.getCurrentWeather();
+        
+        // 1. 检查是否有战斗 (敌人靠近)
+        let isCombat = false;
+        // 优化: 不需要检测所有敌人，只要有一个活跃敌人距离小于 20 米，就是战斗状态
+        for (const enemy of this.enemies) {
+             if (!enemy.isDead && enemy.mesh.visible) { // visible 已经在 EnemyTSL 中简单LOD处理过，大致可信，或者直接检查距离
+                 const distSq = enemy.mesh.position.distanceToSquared(playerPos);
+                 if (distSq < 20 * 20) { // 20m 内有敌人
+                     isCombat = true;
+                     break;
+                 }
+             }
+        }
+        
+        if (isCombat) {
+            sm.setBGMState('combat');
+        } else {
+            // 根据天气播放
+            if (currentWeather === 'rainy') {
+                sm.setBGMState('rainy');
+            } else {
+                sm.setBGMState('sunny');
+            }
+        }
+
         // 同步雨水强度到关卡 (用于水面涟漪)
-        const isRainy = this.weatherSystem.getCurrentWeather() === 'rainy';
+        const isRainy = currentWeather === 'rainy';
         const targetRain = isRainy ? 1.0 : 0.0;
         // 平滑过渡
         this.level.rainIntensity.value = THREE.MathUtils.lerp(
@@ -517,19 +753,41 @@ export class Game {
 
         // 生成逻辑
         this.spawnTimer += delta;
-        if (this.spawnTimer > 3.0 && this.enemies.length < 5) {
+        if (this.spawnTimer > 3.0 && this.enemies.length < LevelConfig.enemySpawn.maxEnemies) {
             this.spawnEnemy();
             this.spawnTimer = 0;
         }
 
         this.pickupSpawnTimer += delta;
-        if (this.pickupSpawnTimer > 10.0) {
-            this.spawnPickup();
+        // if (this.pickupSpawnTimer > 10.0) { // 已移除旧逻辑
+        
+        // 初始批量生成拾取物
+        if (!this.initialPickupsSpawned && this.pickupSpawnTimer > 0) {
+            for (let i = 0; i < 5; i++) {
+                this.spawnPickup();
+            }
+            this.initialPickupsSpawned = true;
+            this.pickupSpawnTimer = 0; // 重置计时器用于后续生成
+        }
+
+        // 后续周期性生成
+        if (this.initialPickupsSpawned && this.pickupSpawnTimer > LevelConfig.pickupSpawn.spawnInterval / 1000) {
+            if (this.pickups.length < LevelConfig.pickupSpawn.maxPickups) {
+                this.spawnPickup();
+            }
             this.pickupSpawnTimer = 0;
         }
 
         // 渲染 (使用后处理)
         this.postProcessing.render();
+
+        // 第一帧渲染完成后调用加载回调
+        if (!this.hasLoaded) {
+            this.hasLoaded = true;
+            if (this.onLoadedCallback) {
+                this.onLoadedCallback();
+            }
+        }
     }
 
     /**

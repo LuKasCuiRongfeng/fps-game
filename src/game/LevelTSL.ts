@@ -11,7 +11,7 @@ import {
     sub, max, min, mod, normalLocal, normalize, step, positionWorld, abs,
     positionLocal, normalView, dot, pow, saturate, exp, uniform
 } from 'three/tsl';
-import { MapConfig, EnvironmentConfig } from './GameConfig';
+import { MapConfig, EnvironmentConfig, LevelConfig } from './GameConfig';
 import { TreeSystem } from './TreeSystem';
 import { GrassSystem } from './GrassSystem';
 import { PhysicsSystem } from './PhysicsSystem';
@@ -90,7 +90,7 @@ export class Level {
         
         // 定义需要避开树木的区域 (出生点、主要路径)
         const excludeAreas = [
-            { x: 0, z: 0, radius: EnvironmentConfig.trees.placement.excludeRadius.spawn }, 
+            { x: 0, z: 0, radius: LevelConfig.safeZoneRadius }, // 使用配置的安全区半径
             { x: 30, z: 30, radius: EnvironmentConfig.trees.placement.excludeRadius.default }, 
             { x: -30, z: -30, radius: EnvironmentConfig.trees.placement.excludeRadius.default }
         ];
@@ -110,7 +110,7 @@ export class Level {
         this.grassSystem = new GrassSystem(this.scene);
         
         const excludeAreas = [
-            { x: 0, z: 0, radius: EnvironmentConfig.grass.placement.excludeRadius.spawn }, 
+            { x: 0, z: 0, radius: LevelConfig.safeZoneRadius }, // 使用配置的安全区半径
             { x: 30, z: 30, radius: EnvironmentConfig.grass.placement.excludeRadius.default }, 
             { x: -30, z: -30, radius: EnvironmentConfig.grass.placement.excludeRadius.default }
         ];
@@ -383,7 +383,32 @@ export class Level {
         const combinedNoise = (noise1 + noise2);
         
         // 应用高度并在中心区域减弱
-        const height = combinedNoise * MapConfig.terrainHeight * centerFlatten;
+        let height = combinedNoise * MapConfig.terrainHeight * centerFlatten;
+        
+        // === 无尽之海边缘处理 (Island Mask) ===
+        // 强制离岛屿中心一定距离外的地形下沉到海平面以下
+        const islandRadius = MapConfig.boundaryRadius; 
+        
+        // 定义海岸线过渡区域
+        // 在达到边界墙 (boundaryRadius) 之前就开始逐渐变为沙滩/浅滩
+        // 并在边界墙之后迅速变为深海
+        const coastStart = islandRadius - 100; // 离边界还有100米时开始下降
+        const coastEnd = islandRadius + 50;    // 边界外50米完全变成深海
+        
+        if (distFromCenter > coastStart) {
+            // 计算过渡因子 (0 = 陆地, 1 = 深海)
+            let t = (distFromCenter - coastStart) / (coastEnd - coastStart);
+            t = Math.max(0, Math.min(1, t));
+            
+            // 平滑过渡 (Smoothstep)
+            const falloff = t * t * (3 - 2 * t);
+            
+            // 混合目标: 深海海床
+            const seaFloorDepth = MapConfig.waterLevel - 15.0;
+            
+            // 线性插值当前高度到海床深度
+            height = THREE.MathUtils.lerp(height, seaFloorDepth, falloff);
+        }
         
         return height;
     }
@@ -563,42 +588,38 @@ export class Level {
     }
 
     /**
-     * 创建墙壁 - 扩大的围墙
+     * 创建空气墙边界 (Invisible Boundary)
+     * 利用海域限制玩家
      */
     private createWalls() {
-        const wallHeight = MapConfig.wallHeight;
-        const wallThickness = 1.5;
-        const arenaSize = MapConfig.size;
+        // 我们不再创建可见的墙壁
+        // 而是创建不可见的碰撞体作为边界
+        // 或者直接依靠 PlayerController 的距离检测 (更简单高性能)，但为了物理系统统一性，这里创建一个巨大的边界碰撞体
+        
+        const boundaryRadius = MapConfig.boundaryRadius;
+        const thickness = 10;
+        
+        // 创建4个隐形墙围成一个正方形区域，或者圆柱体
+        // 简单起见，使用4面隐形墙
+        const range = boundaryRadius; // 正方形边长的一半
+        
+        const wallMaterial = new MeshBasicNodeMaterial({ transparent: true, opacity: 0.0 });
         
         const configs = [
-            { pos: [0, wallHeight/2, -arenaSize/2], size: [arenaSize + wallThickness*2, wallHeight, wallThickness] },
-            { pos: [0, wallHeight/2, arenaSize/2], size: [arenaSize + wallThickness*2, wallHeight, wallThickness] },
-            { pos: [-arenaSize/2, wallHeight/2, 0], size: [wallThickness, wallHeight, arenaSize] },
-            { pos: [arenaSize/2, wallHeight/2, 0], size: [wallThickness, wallHeight, arenaSize] },
+            { pos: [0, 0, -range], size: [range * 2, 100, thickness] }, // North
+            { pos: [0, 0, range], size: [range * 2, 100, thickness] },  // South
+            { pos: [-range, 0, 0], size: [thickness, 100, range * 2] }, // West
+            { pos: [range, 0, 0], size: [thickness, 100, range * 2] },  // East
         ];
 
         configs.forEach(cfg => {
-            const geo = new THREE.BoxGeometry(cfg.size[0], cfg.size[1], cfg.size[2]);
-            
-            // 墙壁需要整个拔高，为了简单起见，这里取墙壁中心的地面高度作为基准高度
-            // 实际上墙壁可能横跨很大的起伏，这里会造成穿帮（两端悬空或深埋）
-            // 更好的做法是墙壁底部延伸很长到地下，或者分段生成
-            // 简单处理：将墙壁向下延伸 10 米，防止下方露出
-            
-            // 更新高度：加上 extraDepth
-            const extraDepth = 15;
-            const newHeight = cfg.size[1] + extraDepth;
-            const newGeo = new THREE.BoxGeometry(cfg.size[0], newHeight, cfg.size[2]);
-            
-            // Y中心位置下移 extraDepth/2
-            const newY = cfg.pos[1] - extraDepth / 2;
-            
-            const mesh = new THREE.Mesh(newGeo, this.wallMaterial);
-            mesh.position.set(cfg.pos[0], newY, cfg.pos[2]);
-            mesh.castShadow = true;
-            mesh.receiveShadow = true;
-            this.scene.add(mesh);
-            this.objects.push(mesh);
+             const geo = new THREE.BoxGeometry(cfg.size[0], cfg.size[1], cfg.size[2]);
+             const mesh = new THREE.Mesh(geo, wallMaterial);
+             mesh.position.set(cfg.pos[0], cfg.pos[1], cfg.pos[2]);
+             mesh.visible = false; // 隐藏
+             
+             this.scene.add(mesh);
+             this.objects.push(mesh);
         });
     }
 
@@ -768,6 +789,10 @@ export class Level {
             
             // 获取地形高度
             const groundY = this.getTerrainHeight(p.x, p.z);
+            
+            // 避免在玩家安全区内生成 (新增)
+            const distToSpawn = Math.sqrt(p.x * p.x + p.z * p.z);
+            if (distToSpawn < LevelConfig.safeZoneRadius) return;
             
             // 避免在水里生成障碍物
             if (groundY < EnvironmentConfig.water.level + 0.5) return;

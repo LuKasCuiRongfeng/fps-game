@@ -90,11 +90,9 @@ export class GrassSystem {
         const halfSize = mapSize / 2;
         
         // 计算密度缩放系数
-        // 假设原始 baseCount 是针对 200x200 (40000m2) 的
-        // 目标密度 = baseCount / 40000
-        // 每个 Chunk (100x100 = 10000m2) 的数量 = 目标密度 * 10000 = baseCount / 4
-        // 我们稍微降低一点密度以保证性能 (例如 * 0.2 而不是 0.25)
-        const countMultiplier = 0.2; 
+        // 恢复正常密度，因为我们现在限制了生成范围
+        // 目标是让岛屿上的草丛茂盛
+        const countMultiplier = 1.0; 
         
         console.log(`Generating Grass: Map=${mapSize}, Chunk=${chunkSize}, Multiplier=${countMultiplier}`);
 
@@ -114,6 +112,14 @@ export class GrassSystem {
         getHeightAt: (x: number, z: number) => number,
         excludeAreas: any[]
     ) {
+        // 性能优化：严格限制生成范围，仅在岛屿上生成
+        const maxGrassDist = MapConfig.boundaryRadius + 50; 
+        
+        // 粗略判断: Chunk中心距离 > 半径 + Chunk一半大小
+        if (cx * cx + cz * cz > (maxGrassDist + size/2) * (maxGrassDist + size/2)) {
+            return;
+        }
+
         // 对每种草类型生成一个 Mesh
         this.grassTypes.forEach(type => {
             const count = Math.floor(type.baseCount * multiplier);

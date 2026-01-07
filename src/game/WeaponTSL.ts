@@ -484,14 +484,20 @@ export class Weapon {
             }
         }
         
-        // 2. 添加静态物体 (使用 PhysicsSystem 空间查询优化)
+        // 2. 添加静态物体 (使用 PhysicsSystem DDA 射线检测优化)
         if (this.physicsSystem) {
-            // 查询 60m 范围的静态物体 (足够掩体判定)
-            // 注意: getNearbyObjects 返回的是 Object3D (Mesh) 列表，直接用于检测非常高效
-            // 避免了检测整个场景树
-            const nearby = this.physicsSystem.getNearbyObjects(this.camera.position, 60);
-            for(const entry of nearby) {
-                raycastObjects.push(entry.object);
+            // 使用 PhysicsSystem 的 DDA 算法精确定位射线路径上的物体
+            // 相比 getNearbyObjects(60m)，这支持超远距离射击且性能更好
+            const maxDistance = WeaponConfig.gun.range || 500;
+            const candidates = this.physicsSystem.getRaycastCandidates(
+                this.raycaster.ray.origin, 
+                this.raycaster.ray.direction, 
+                maxDistance
+            );
+            
+            // 添加候选物体到检测列表
+            for(const obj of candidates) {
+                raycastObjects.push(obj);
             }
         } else {
             // 降级：如果没有物理系统，遍历场景 (性能较差)

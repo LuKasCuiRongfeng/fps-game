@@ -45,6 +45,7 @@ export class Enemy {
     private leftLeg!: THREE.Group;
     private rightLeg!: THREE.Group;
     private eyes!: THREE.Mesh;
+    private headDetails!: THREE.Group; // LOD 优化: 头部细节组
     
     // 武器系统
     private weapon!: THREE.Group;
@@ -64,6 +65,11 @@ export class Enemy {
     // 射击状态 (供外部读取)
     public lastShotHit: boolean = false;
     public lastShotDirection: THREE.Vector3 = new THREE.Vector3();
+    
+    // 视线检测优化
+    private visibilityCheckTimer: number = 0;
+    private isPlayerVisible: boolean = false;
+    private readonly VISIBILITY_CHECK_INTERVAL: number = 0.25; // 每秒检测4次
     
     // 射击姿态
     private isAiming: boolean = false;
@@ -114,14 +120,14 @@ export class Enemy {
         const torsoGeo = new THREE.BoxGeometry(0.6, 0.8, 0.35);
         this.body = new THREE.Mesh(torsoGeo, armorMaterial);
         this.body.position.y = 1.2;
-        this.body.castShadow = true;
+        this.body.castShadow = true; // 主躯干产生阴影
         group.add(this.body);
         
         // 腹部
         const abdomenGeo = new THREE.BoxGeometry(0.5, 0.3, 0.3);
         const abdomen = new THREE.Mesh(abdomenGeo, bodyMaterial);
         abdomen.position.y = 0.7;
-        abdomen.castShadow = true;
+        abdomen.castShadow = false; // 优化：小部件不产生阴影
         group.add(abdomen);
         
         // 肩甲
@@ -129,13 +135,13 @@ export class Enemy {
         const leftShoulder = new THREE.Mesh(shoulderGeo, armorMaterial);
         leftShoulder.position.set(-0.45, 1.45, 0);
         leftShoulder.rotation.z = -0.2;
-        leftShoulder.castShadow = true;
+        leftShoulder.castShadow = false; // 优化
         group.add(leftShoulder);
         
         const rightShoulder = new THREE.Mesh(shoulderGeo, armorMaterial);
         rightShoulder.position.set(0.45, 1.45, 0);
         rightShoulder.rotation.z = 0.2;
-        rightShoulder.castShadow = true;
+        rightShoulder.castShadow = false; // 优化
         group.add(rightShoulder);
         
         // ========== 头部 ==========
@@ -146,33 +152,39 @@ export class Enemy {
         const headGeo = new THREE.SphereGeometry(0.22, 12, 10);
         this.head = new THREE.Mesh(headGeo, headMaterial);
         this.head.scale.set(1, 1.1, 1);
-        this.head.castShadow = true;
+        this.head.castShadow = true; // 头部产生阴影
         headGroup.add(this.head);
         
         // 头盔/面罩
         const helmetGeo = new THREE.SphereGeometry(0.24, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.6);
         const helmet = new THREE.Mesh(helmetGeo, armorMaterial);
         helmet.position.y = 0.05;
-        helmet.castShadow = true;
+        helmet.castShadow = false; // 优化
         headGroup.add(helmet);
         
+        // --- LOD 细节组 ---
+        this.headDetails = new THREE.Group();
+        headGroup.add(this.headDetails);
+
         // 眼睛 (发光)
         const eyeGeo = new THREE.SphereGeometry(0.04, 8, 6);
         this.eyes = new THREE.Mesh(eyeGeo, eyeMaterial);
+        this.eyes.castShadow = false; // 优化
         
         const leftEye = this.eyes.clone();
         leftEye.position.set(-0.08, 0, 0.18);
-        headGroup.add(leftEye);
+        this.headDetails.add(leftEye);
         
         const rightEye = this.eyes.clone();
         rightEye.position.set(0.08, 0, 0.18);
-        headGroup.add(rightEye);
+        this.headDetails.add(rightEye);
         
         // 面部护甲条
         const visorGeo = new THREE.BoxGeometry(0.3, 0.04, 0.08);
         const visor = new THREE.Mesh(visorGeo, armorMaterial);
         visor.position.set(0, -0.05, 0.18);
-        headGroup.add(visor);
+        visor.castShadow = false; // 优化
+        this.headDetails.add(visor);
         
         group.add(headGroup);
         
@@ -226,28 +238,28 @@ export class Enemy {
         const upperArmGeo = new THREE.CapsuleGeometry(0.08, 0.25, 4, 8);
         const upperArm = new THREE.Mesh(upperArmGeo, bodyMaterial);
         upperArm.position.y = -0.2;
-        upperArm.castShadow = true;
+        upperArm.castShadow = true; // 主要肢体保留阴影
         arm.add(upperArm);
         
         // 护臂
         const bracerGeo = new THREE.CylinderGeometry(0.09, 0.1, 0.15, 8);
         const bracer = new THREE.Mesh(bracerGeo, armorMaterial);
         bracer.position.y = -0.2;
-        bracer.castShadow = true;
+        bracer.castShadow = false; // 优化
         arm.add(bracer);
         
         // 前臂
         const forearmGeo = new THREE.CapsuleGeometry(0.06, 0.22, 4, 8);
         const forearm = new THREE.Mesh(forearmGeo, bodyMaterial);
         forearm.position.y = -0.5;
-        forearm.castShadow = true;
+        forearm.castShadow = false; // 优化: 小臂可能被身体遮挡，或者是快节奏下不太注意
         arm.add(forearm);
         
         // 手
         const handGeo = new THREE.SphereGeometry(0.06, 6, 6);
         const hand = new THREE.Mesh(handGeo, bodyMaterial);
         hand.position.y = -0.7;
-        hand.castShadow = true;
+        hand.castShadow = false; // 优化
         arm.add(hand);
         
         return arm;
@@ -263,35 +275,35 @@ export class Enemy {
         const thighGeo = new THREE.CapsuleGeometry(0.1, 0.28, 4, 8);
         const thigh = new THREE.Mesh(thighGeo, bodyMaterial);
         thigh.position.y = -0.2;
-        thigh.castShadow = true;
+        thigh.castShadow = true; // 大腿保留阴影
         leg.add(thigh);
         
         // 大腿护甲
         const thighArmorGeo = new THREE.CylinderGeometry(0.11, 0.12, 0.2, 8);
         const thighArmor = new THREE.Mesh(thighArmorGeo, armorMaterial);
         thighArmor.position.y = -0.15;
-        thighArmor.castShadow = true;
+        thighArmor.castShadow = false; // 优化
         leg.add(thighArmor);
         
         // 小腿
         const shinGeo = new THREE.CapsuleGeometry(0.07, 0.3, 4, 8);
         const shin = new THREE.Mesh(shinGeo, bodyMaterial);
         shin.position.y = -0.55;
-        shin.castShadow = true;
+        shin.castShadow = true; // 小腿保留阴影
         leg.add(shin);
         
         // 小腿护甲
         const shinArmorGeo = new THREE.BoxGeometry(0.1, 0.25, 0.12);
         const shinArmor = new THREE.Mesh(shinArmorGeo, armorMaterial);
         shinArmor.position.set(0, -0.5, 0.04);
-        shinArmor.castShadow = true;
+        shinArmor.castShadow = false; // 优化
         leg.add(shinArmor);
         
         // 靴子
         const bootGeo = new THREE.BoxGeometry(0.12, 0.1, 0.2);
         const boot = new THREE.Mesh(bootGeo, armorMaterial);
         boot.position.set(0, -0.8, 0.03);
-        boot.castShadow = true;
+        boot.castShadow = false; // 优化
         leg.add(boot);
         
         return leg;
@@ -310,6 +322,7 @@ export class Enemy {
         const bodyGeo = new THREE.BoxGeometry(0.06, 0.08, 0.5);
         const body = new THREE.Mesh(bodyGeo, gunMaterial);
         body.position.z = 0.1;
+        body.castShadow = true; // 枪身保留阴影
         weapon.add(body);
         
         // 枪管
@@ -317,18 +330,21 @@ export class Enemy {
         const barrel = new THREE.Mesh(barrelGeo, metalMaterial);
         barrel.rotation.x = Math.PI / 2;
         barrel.position.z = 0.5;
+        barrel.castShadow = false; // 优化
         weapon.add(barrel);
         
         // 弹匣
         const magGeo = new THREE.BoxGeometry(0.04, 0.15, 0.06);
         const mag = new THREE.Mesh(magGeo, gunMaterial);
         mag.position.set(0, -0.1, 0.05);
+        mag.castShadow = false; // 优化
         weapon.add(mag);
         
         // 枪托
         const stockGeo = new THREE.BoxGeometry(0.05, 0.06, 0.15);
         const stock = new THREE.Mesh(stockGeo, gunMaterial);
         stock.position.z = -0.2;
+        stock.castShadow = false; // 优化
         weapon.add(stock);
         
         // 握把
@@ -336,6 +352,7 @@ export class Enemy {
         const grip = new THREE.Mesh(gripGeo, gunMaterial);
         grip.position.set(0, -0.08, 0);
         grip.rotation.x = 0.2;
+        grip.castShadow = false; // 优化
         weapon.add(grip);
         
         // 瞄准镜
@@ -343,6 +360,7 @@ export class Enemy {
         const scope = new THREE.Mesh(scopeGeo, metalMaterial);
         scope.rotation.x = Math.PI / 2;
         scope.position.set(0, 0.06, 0.15);
+        scope.castShadow = false; // 优化
         weapon.add(scope);
         
         // 枪口闪光 (初始隐藏)
@@ -358,9 +376,12 @@ export class Enemy {
         
         // 设置所有子对象
         weapon.traverse((child) => {
-            if (child instanceof THREE.Mesh) {
-                child.castShadow = true;
+            if (child instanceof THREE.Mesh && !child.userData.isEnemyWeapon) {
+                // 如果没有手动设置过 (上面代码设置了 castShadow)，默认不投射阴影
+                // 这里逻辑有点绕，我们在上面已经设置了 castShadow，所以 traverse 里只需设置 userData
                 child.userData = { isEnemyWeapon: true };
+            } else if (child instanceof THREE.Mesh) {
+                 child.userData = { isEnemyWeapon: true };
             }
         });
         
@@ -550,6 +571,14 @@ export class Enemy {
         const distanceToPlayer = toPlayer.length();
         toPlayer.normalize();
         
+        // 性能优化: LOD 处理
+        // 如果距离较远，隐藏细节部件
+        if (distanceToPlayer > 30) {
+             this.headDetails.visible = false;
+        } else {
+             this.headDetails.visible = true;
+        }
+        
         // 射击逻辑
         this.fireTimer += delta;
         
@@ -561,8 +590,21 @@ export class Enemy {
             }
         }
         
+        // 优化视线检测频率
+        this.visibilityCheckTimer -= delta;
+        if (this.visibilityCheckTimer <= 0) {
+             this.visibilityCheckTimer = this.VISIBILITY_CHECK_INTERVAL + Math.random() * 0.1; // 随机化避免尖峰
+             
+             // 只有在攻击距离内才检测视线
+             if (distanceToPlayer <= this.engageRange) {
+                 this.isPlayerVisible = this.canSeePlayer(playerPosition);
+             } else {
+                 this.isPlayerVisible = false;
+             }
+        }
+        
         // 检查是否应该瞄准/射击
-        if (distanceToPlayer <= this.engageRange && this.canSeePlayer(playerPosition, obstacles)) {
+        if (this.isPlayerVisible) {
             // 计算瞄准方向
             this.targetAimDirection.subVectors(playerPosition, this.mesh.position);
             this.targetAimDirection.y = playerPosition.y + 0.8 - (this.mesh.position.y + 1.3); // 瞄准玩家躯干
@@ -574,7 +616,8 @@ export class Enemy {
             
             // 射击 (需要瞄准到一定程度才能射击)
             if (this.fireTimer >= 1 / this.fireRate && this.aimProgress > 0.7) {
-                const shotResult = this.fireAtPlayer(playerPosition, obstacles);
+                // 这里不需要再次传递 obstacles，因为 fireAtPlayer 不需要做碰撞检测 (基于概率)
+                const shotResult = this.fireAtPlayer(playerPosition);
                 result.fired = true;
                 result.hit = shotResult.hit;
                 result.damage = shotResult.damage;
@@ -698,8 +741,9 @@ export class Enemy {
     
     /**
      * 检查是否能看到玩家 (视线检测)
+     * 优化：使用 PhysicsSystem 网格遍历，避免检测全场景
      */
-    private canSeePlayer(playerPosition: THREE.Vector3, obstacles: THREE.Object3D[]): boolean {
+    private canSeePlayer(playerPosition: THREE.Vector3): boolean {
         const eyePosition = this.mesh.position.clone();
         eyePosition.y += 1.7; // 眼睛高度
         
@@ -709,16 +753,15 @@ export class Enemy {
         
         const raycaster = new THREE.Raycaster(eyePosition, direction, 0, distance);
         
-        // 过滤可遮挡的障碍物
-        const blockingObjects = obstacles.filter(obj => {
-            return obj instanceof THREE.Mesh && 
-                   !obj.userData.isEnemy && 
-                   !obj.userData.isGround &&
-                   !obj.userData.isWayPoint &&
-                   !obj.userData.isDust;
-        });
+        // 1. 使用 PhysicsSystem 获取候选物体 (Broad Phase)
+        // 如果没有 PhysicsSystem，则无法检测遮挡 (默认可见)
+        if (!this.physicsSystem) return true;
         
-        const intersects = raycaster.intersectObjects(blockingObjects, true);
+        const candidates = this.physicsSystem.getRaycastCandidates(eyePosition, direction, distance);
+        
+        // 2. 精确检测 (Raycast)
+        // 不需要过滤 blockedObjects，因为 PhysicsSystem 只包含静态障碍物
+        const intersects = raycaster.intersectObjects(candidates, true);
         
         // 如果没有障碍物遮挡，可以看到玩家
         return intersects.length === 0;
@@ -727,7 +770,7 @@ export class Enemy {
     /**
      * 向玩家射击
      */
-    private fireAtPlayer(playerPosition: THREE.Vector3, obstacles: THREE.Object3D[]): { hit: boolean; damage: number } {
+    private fireAtPlayer(playerPosition: THREE.Vector3): { hit: boolean; damage: number } {
         // 显示枪口闪光
         this.muzzleFlash.visible = true;
         this.muzzleFlashTimer = this.muzzleFlashDuration;
@@ -736,8 +779,8 @@ export class Enemy {
         SoundManager.getInstance().playShoot();
         
         // 计算射击方向 (带散布)
-        // 确保矩阵更新，获取正确的枪口世界坐标
-        this.mesh.updateMatrixWorld(true);
+        // 优化: 不强制更新整个矩阵树，接受一帧的延迟或使用上一帧的矩阵
+        // this.mesh.updateMatrixWorld(true);
         const muzzleWorldPos = new THREE.Vector3();
         this.muzzlePoint.getWorldPosition(muzzleWorldPos);
         

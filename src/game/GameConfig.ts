@@ -258,16 +258,22 @@ export const InitialState = {
 
 // ==================== 关卡配置 ====================
 export const LevelConfig = {
+    // 玩家安全生成区 (半径)
+    safeZoneRadius: 15.0,
+    
     // 敌人生成
     enemySpawn: {
-        maxEnemies: 1,            // 最大敌人数量
+        maxEnemies: 10,            // 最大敌人数量
         spawnInterval: 5000,       // 生成间隔 (ms)
         spawnRadius: { min: 20, max: 40 },  // 生成距离范围
+        initialDelay: 30000,          // 首次生成延迟 (ms)
     },
     
     // 拾取物生成
     pickupSpawn: {
         maxPickups: 8,             // 最大拾取物数量
+        initialDelay: 2000,        // 首次生成延迟 (ms)
+        spawnInterval: 10000,      // 后续生成间隔 (ms)
     },
 };
 
@@ -287,8 +293,8 @@ export const WeatherConfig = {
     sunny: {
         skyColor: 0x87ceeb,        // 天空颜色
         fogColor: 0x87ceeb,        // 雾气颜色
-        fogNear: 50,               // 雾气起始距离
-        fogFar: 200,               // 雾气结束距离
+        fogNear: 100,              // 雾气起始距离
+        fogFar: 800,               // 雾气结束距离 (匹配可视距离)
         ambientIntensity: 0.6,     // 环境光强度
         sunIntensity: 1.2,         // 太阳光强度
         sunColor: 0xffffff,        // 太阳光颜色
@@ -300,8 +306,8 @@ export const WeatherConfig = {
     rainy: {
         skyColor: 0x2d3748,        // 更暗的天空
         fogColor: 0x4a5568,        // 深灰色雾气
-        fogNear: 20,               // 极近的雾 (调整适应大地图)
-        fogFar: 180,               // 能见度很低
+        fogNear: 50,               // 雾气起始距离
+        fogFar: 600,               // 能见度较低
         ambientIntensity: 0.15,    // 非常暗的环境光
         sunIntensity: 0.1,         // 太阳几乎不可见
         sunColor: 0x6b7280,        // 深灰色光
@@ -428,10 +434,97 @@ export const EnvironmentConfig = {
 
 // ==================== 地图配置 ====================
 export const MapConfig = {
-    size: 800,           // 地图大小 (800x800) - 扩大4倍 (面积16倍)
-    wallHeight: 6,
-    chunkSize: 100,      // 分块大小 (用于LOD和剔除) - 8x8 个块
-    maxViewDistance: 250, // 最大可见距离
+    size: 4000,           // 地图大小 - 扩大以覆盖可视区域 (750 + 800 * 2)
+    wallHeight: 0,        // 废弃
+    waterLevel: -3.0,     // 水面高度
+    boundaryRadius: 750,  // 实际可活动半径 (圆柱形边界)
+    chunkSize: 500,      // 分块大小 (用于LOD和剔除) - 增大以减少 InstancedMesh 数量 (从 1600->64)，大幅降低 Draw Calls
+    maxViewDistance: 800, // 最大可见距离 (为了看到海)
     terrainSegments: 800, // 地形细分数量 (保持 ~1米精度)
-    terrainHeight: 15.0,  // 地形最大起伏高度 (因地图变大，起伏也应适当变大)
+    terrainHeight: 15.0,  // 地形最大起伏高度
+};
+
+// ==================== 音效配置 ====================
+export const SoundConfig = {
+    // 全局音量
+    masterVolume: 0.3,
+    bgmVolume: 1.0,
+
+    // 背景音乐配置
+    bgm: {
+        sunny: {
+            scale: [261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25], // C Major
+            drone: {
+                freq: 130.81, // C3
+                volume: 0.3,  // Max volume after ramp
+                duration: 8,  // seconds
+            },
+            melody: {
+                probability: 0.7, // > 0.3
+                volume: 0.1,
+            },
+            interval: {
+                loop: 1000,
+                droneTick: 8,
+                melodyTick: 1,
+            }
+        },
+        rainy: {
+            scale: [220.00, 246.94, 261.63, 293.66, 329.63, 349.23, 392.00], // A Minor
+            drone: {
+                freq: 110.00, // A2
+                volume: 0.35,
+                duration: 10,
+                filterFreq: 400,
+            },
+            melody: {
+                probability: 0.4, // > 0.6
+                volume: 0.2,
+            },
+            interval: {
+                loop: 1000,
+                droneTick: 10,
+                melodyTick: 2,
+            }
+        },
+        combat: {
+            bass: {
+                freq: 55.00, // A1
+                volume: 0.6,
+                filterStart: 200,
+                filterEnd: 600,
+            },
+            alarm: {
+                probability: 0.3, // > 0.7
+                volume: 0.15,
+                freq1: 440,
+                freq2: 554,
+            },
+            interval: 250, // ms
+        }
+    },
+    
+    // 武器音效
+    weapon: {
+        shoot: {
+            throttle: 50, // ms
+            volume: 0.5,
+        },
+    },
+
+    // 环境音效
+    ambient: {
+        rain: {
+            filterLow: 3000,
+            filterHigh: 500,
+        },
+        wind: {
+            filterFreq: 400,
+            lfoFreq: 0.4,
+        },
+        sandstorm: {
+             filterLow: 2000,
+             filterHigh: 200,
+        }
+    }
 };
