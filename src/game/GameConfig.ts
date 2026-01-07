@@ -452,56 +452,10 @@ export const SoundConfig = {
 
     // 背景音乐配置
     bgm: {
-        sunny: {
-            scale: [261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25], // C Major
-            drone: {
-                freq: 130.81, // C3
-                volume: 0.3,  // Max volume after ramp
-                duration: 8,  // seconds
-            },
-            melody: {
-                probability: 0.7, // > 0.3
-                volume: 0.1,
-            },
-            interval: {
-                loop: 1000,
-                droneTick: 8,
-                melodyTick: 1,
-            }
-        },
-        rainy: {
-            scale: [220.00, 246.94, 261.63, 293.66, 329.63, 349.23, 392.00], // A Minor
-            drone: {
-                freq: 110.00, // A2
-                volume: 0.35,
-                duration: 10,
-                filterFreq: 400,
-            },
-            melody: {
-                probability: 0.4, // > 0.6
-                volume: 0.2,
-            },
-            interval: {
-                loop: 1000,
-                droneTick: 10,
-                melodyTick: 2,
-            }
-        },
-        combat: {
-            bass: {
-                freq: 55.00, // A1
-                volume: 0.6,
-                filterStart: 200,
-                filterEnd: 600,
-            },
-            alarm: {
-                probability: 0.3, // > 0.7
-                volume: 0.15,
-                freq1: 440,
-                freq2: 554,
-            },
-            interval: 250, // ms
-        }
+        fadeDuration: 0.5, // Crossfade duration in seconds
+        sunnyVolume: 0.8,
+        rainyVolume: 0.8,
+        combatVolume: 0.8,
     },
     
     // 武器音效
