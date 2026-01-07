@@ -4,6 +4,8 @@
 
 文件结构：游戏代码放在 src/game 目录下，请注意文件良好的划分，ui放在src/ui目录下
 
+静态资产：放在src-tauri/resources 目录下
+
 rust：如果项目需要用到后端的能力，请用rust在 src-tauri/src目录下编写
 
 要求：尽可能的用 TSL 写shader，能用shader的地方就尽量用TSL 写shader，能用gpu加速的地方就尽量用 TSL 写compute shader，做到好的性能
