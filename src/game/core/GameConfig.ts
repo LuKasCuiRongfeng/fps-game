@@ -402,7 +402,7 @@ export const LevelConfig = {
         spawnInterval: 5000,       // 生成间隔 (ms)
         spawnRadius: { min: 20, max: 40 },  // 生成距离范围
         initialDelay: 30000,          // 首次生成延迟 (ms)
-        disabled: false,         // 是否禁用敌人生成
+        disabled: true,         // 是否禁用敌人生成
     },
     
     // 拾取物生成

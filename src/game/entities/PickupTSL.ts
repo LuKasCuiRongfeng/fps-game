@@ -30,6 +30,12 @@ export class Pickup {
     private glowMesh: THREE.Mesh | null = null;
     private glowRing: THREE.Mesh | null = null;  // 地面光环
 
+    // Shared prototypes to avoid per-spawn geometry/material/TSL graph creation spikes.
+    // Note: prototype materials bake a fixed pulse offset; visuals are still acceptable,
+    // while greatly improving spawn-time stability.
+    private static healthPrototype: THREE.Group | null = null;
+    private static ammoPrototype: THREE.Group | null = null;
+
     constructor(type: PickupType, position: THREE.Vector3) {
         this.type = type;
         this.baseHeight = position.y;
@@ -38,10 +44,25 @@ export class Pickup {
         // TSL Uniforms
         this.collectProgress = uniform(0);
 
-        // 创建拾取物模型
-        this.mesh = type === 'health' 
-            ? this.createHealthPack()
-            : this.createAmmoBox();
+        // Create pickup mesh using shared prototypes to avoid spawn spikes.
+        if (type === 'health') {
+            if (!Pickup.healthPrototype) {
+                // Build prototype once (fixed offset baked into materials)
+                const prevOffset = this.floatOffset;
+                this.floatOffset = 0;
+                Pickup.healthPrototype = this.createHealthPack();
+                this.floatOffset = prevOffset;
+            }
+            this.mesh = Pickup.healthPrototype.clone(true);
+        } else {
+            if (!Pickup.ammoPrototype) {
+                const prevOffset = this.floatOffset;
+                this.floatOffset = 0;
+                Pickup.ammoPrototype = this.createAmmoBox();
+                this.floatOffset = prevOffset;
+            }
+            this.mesh = Pickup.ammoPrototype.clone(true);
+        }
         
         this.mesh.position.copy(position);
         this.mesh.position.y += PickupConfig.visual.floatHeight;  // 叠加漂浮高度
@@ -457,17 +478,6 @@ export class Pickup {
         if (this.isInRange) {
             GameStateService.getInstance().setPickupHint(null);
         }
-        this.mesh.traverse((child) => {
-            if (child instanceof THREE.Mesh) {
-                if (child.geometry) child.geometry.dispose();
-                if (child.material) {
-                    if (Array.isArray(child.material)) {
-                        child.material.forEach(m => m.dispose());
-                    } else {
-                        child.material.dispose();
-                    }
-                }
-            }
-        });
+        // Meshes share geometries/materials via static prototypes; do not dispose per instance.
     }
 }

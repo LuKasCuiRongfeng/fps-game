@@ -61,6 +61,7 @@ export class Game {
     private spawnTimer: number = 0;
     private pickupSpawnTimer: number = 0;
     private initialPickupsSpawned: boolean = false;
+    private pendingInitialPickupSpawns: number = 0;
 
     // 系统
     private physicsSystem!: PhysicsSystem;
@@ -128,6 +129,8 @@ export class Game {
     private onProgressCallback?: (progress: number, desc: string) => void;
     private onLoadedCallback?: () => void;
     private hasLoaded: boolean = false;
+    private pendingOnLoadedCallback: boolean = false;
+    private onLoadedFramesRemaining: number = 0;
 
     constructor(
         container: HTMLElement,
@@ -301,31 +304,39 @@ export class Game {
         // 关键修复：生成并添加虚拟实体，确保它们的 Shader 在 Warmup 阶段也被编译
         // 之前只 Warmup 了静态场景，导致敌人生成时产生的 Shader 编译导致卡顿
 
+        // IMPORTANT: dummy entities must be inside the camera frustum during warmup.
+        // If they are underground/out of view, compileAsync won't compile their pipelines.
+        const dummyAnchor = new THREE.Vector3(
+            this.camera.position.x,
+            this.camera.position.y,
+            this.camera.position.z
+        );
+
         // 1. 虚拟敌人
-        const dummyEnemy = new Enemy(new THREE.Vector3(0, -100, 0)); // 藏在地下
+        const dummyEnemy = new Enemy(new THREE.Vector3(dummyAnchor.x + 2.0, dummyAnchor.y, dummyAnchor.z - 4.0));
         this.scene.add(dummyEnemy.mesh);
 
         // 2. 虚拟拾取物 (两种类型)
         const dummyPickupHealth = new Pickup(
             "health",
-            new THREE.Vector3(2, -100, 0)
+            new THREE.Vector3(dummyAnchor.x - 2.0, dummyAnchor.y, dummyAnchor.z - 3.0)
         );
         this.scene.add(dummyPickupHealth.mesh);
 
         const dummyPickupAmmo = new Pickup(
             "ammo",
-            new THREE.Vector3(4, -100, 0)
+            new THREE.Vector3(dummyAnchor.x - 3.2, dummyAnchor.y, dummyAnchor.z - 3.0)
         );
         this.scene.add(dummyPickupAmmo.mesh);
 
         // 3. 虚拟手榴弹
         const dummyGrenade = new Grenade(
-            new THREE.Vector3(6, -100, 0),
+            new THREE.Vector3(dummyAnchor.x + 3.0, dummyAnchor.y, dummyAnchor.z - 3.0),
             new THREE.Vector3(0, 1, 0),
             0,
             this.scene,
             [],
-            new THREE.Vector3(0, 0, 0)
+            dummyAnchor
         );
         // Grenade 构造函数已经将 mesh 添加到 scene (稍后确认 implementation, 但 GameTSL 使用时没有 add?)
         // 检查 GameTSL.throwGrenade 实现：
@@ -379,28 +390,23 @@ export class Game {
                 this.camera.quaternion.copy(originalQuaternion);
                 this.camera.updateMatrixWorld();
 
-                // 2. 暴力预热：强制渲染几帧以触发所有后处理和阴影管线
-                // CompileAsync 可能不会触发 PostProcessing 链中的所有 shader
+                // 2. Render warmup: force postprocessing + shadow pipelines for multiple views.
+                // compileAsync alone may miss postprocessing passes and some resource uploads.
                 this.updateProgress(97, "Warming up Render Loop...");
-                for (let i = 0; i < 5; i++) {
-                    // 稍微旋转一点点相机，强制更新视锥体相关计算
-                    this.camera.rotateY(0.01);
-                    this.camera.updateMatrixWorld();
+                for (const angle of angles) {
+                    for (const pitch of pitches) {
+                        this.camera.setRotationFromEuler(
+                            new THREE.Euler(pitch, angle, 0, "YXZ")
+                        );
+                        this.camera.updateMatrixWorld();
 
-                    // 更新部分系统
-                    this.uniformManager.update(
-                        0.016,
-                        this.camera.position,
-                        100
-                    );
-                    this.gpuCompute.updateEnemies(0.016, this.camera.position);
-                    this.particleSystem.update(0.016);
+                        this.uniformManager.update(0.016, this.camera.position, 100);
+                        this.gpuCompute.updateEnemies(0.016, this.camera.position);
+                        this.particleSystem.update(0.016);
 
-                    // 真实渲染 (触发 PostProcessing 等所有效果)
-                    await this.postProcessing.render();
-
-                    // 让出主线程一瞬间，防止浏览器认为页面卡死
-                    await new Promise((resolve) => setTimeout(resolve, 10));
+                        await this.postProcessing.render();
+                        await new Promise((resolve) => setTimeout(resolve, 0));
+                    }
                 }
                 // 恢复相机
                 this.camera.position.copy(originalPosition);
@@ -411,7 +417,11 @@ export class Game {
                 this.scene.remove(dummyEnemy.mesh);
                 this.scene.remove(dummyPickupHealth.mesh);
                 this.scene.remove(dummyPickupAmmo.mesh);
-                dummyEnemy.dispose(); // 如果有 dispose
+                this.scene.remove(dummyGrenade.mesh);
+                dummyEnemy.dispose();
+                dummyPickupHealth.dispose();
+                dummyPickupAmmo.dispose();
+                dummyGrenade.dispose();
             } else {
                 // @ts-ignore - Fallback/Compat
                 await this.renderer.compile(this.scene, this.camera);
@@ -425,12 +435,11 @@ export class Game {
         // 启动渲染循环
         this.renderer.setAnimationLoop(this.animate.bind(this));
 
-        // 标记加载完成
-        this.hasLoaded = true;
-        this.updateProgress(100, "Game Loaded");
-        if (this.onLoadedCallback) {
-            this.onLoadedCallback();
-        }
+        // Delay the UI "loaded" signal until a few real frames render.
+        // This avoids the player seeing the first-frame / first-input hitch.
+        this.updateProgress(99, "Finalizing...");
+        this.pendingOnLoadedCallback = true;
+        this.onLoadedFramesRemaining = 8;
     }
 
     /**
@@ -907,11 +916,9 @@ export class Game {
         this.pickupSpawnTimer += delta;
         // if (this.pickupSpawnTimer > 10.0) { // 已移除旧逻辑
 
-        // 初始批量生成拾取物
+        // 初始拾取物生成：分帧生成，避免单帧 spike
         if (!this.initialPickupsSpawned && this.pickupSpawnTimer > 0) {
-            for (let i = 0; i < 5; i++) {
-                this.spawnPickup();
-            }
+            this.pendingInitialPickupSpawns = 5;
             this.initialPickupsSpawned = true;
             this.pickupSpawnTimer = 0; // 重置计时器用于后续生成
         }
@@ -930,12 +937,21 @@ export class Game {
         // 渲染 (使用后处理)
         this.postProcessing.render();
 
-        // 第一帧渲染完成后调用加载回调
-        if (!this.hasLoaded) {
-            this.hasLoaded = true;
-            if (this.onLoadedCallback) {
-                this.onLoadedCallback();
+        // Defer "loaded" callback until a few frames have been presented.
+        if (this.pendingOnLoadedCallback) {
+            this.onLoadedFramesRemaining--;
+            if (this.onLoadedFramesRemaining <= 0) {
+                this.pendingOnLoadedCallback = false;
+                this.hasLoaded = true;
+                this.updateProgress(100, "Game Loaded");
+                this.onLoadedCallback?.();
             }
+        }
+
+        // Spread initial pickup spawning across frames to avoid a single-frame spike.
+        if (this.pendingInitialPickupSpawns > 0) {
+            this.spawnPickup();
+            this.pendingInitialPickupSpawns--;
         }
     }
 
