@@ -12,6 +12,9 @@ export class PlayerGrenadeWeapon implements IPlayerWeapon {
 
     private onGrenadeThrow: ((position: THREE.Vector3, direction: THREE.Vector3) => void) | null = null;
 
+    private tmpThrowPosition = new THREE.Vector3();
+    private tmpThrowDirection = new THREE.Vector3();
+
     constructor(camera: THREE.Camera, grenadeHand: GrenadeHand) {
         this.camera = camera;
         this.grenadeHand = grenadeHand;
@@ -43,10 +46,10 @@ export class PlayerGrenadeWeapon implements IPlayerWeapon {
         this.grenadeHand.startThrow(() => {
             if (!this.onGrenadeThrow) return;
 
-            const throwPosition = this.camera.position.clone();
+            const throwPosition = this.tmpThrowPosition.copy(this.camera.position);
             throwPosition.y -= 0.2;
 
-            const throwDirection = new THREE.Vector3();
+            const throwDirection = this.tmpThrowDirection;
             this.camera.getWorldDirection(throwDirection);
 
             this.onGrenadeThrow(throwPosition, throwDirection);

@@ -29,6 +29,7 @@ import { SoundManager } from "./SoundManager";
 import { Level } from "../level/Level";
 import { Pathfinding } from "./Pathfinding";
 import { PhysicsSystem } from "./PhysicsSystem";
+import { enableBVH } from './BVH';
 import { UniformManager } from "../shaders/TSLMaterials";
 import { GPUComputeSystem } from "../shaders/GPUCompute";
 import { GPUParticleSystem } from "../shaders/GPUParticles";
@@ -84,6 +85,44 @@ export class Game {
     private frameCount: number = 0;
     private lastFpsUpdate: number = 0;
     private currentFps: number = 60;
+
+    // Enemy bullet trail pooling (avoid per-shot geometry/material allocations)
+    private enemyTrailPool: Array<{
+        group: THREE.Group;
+        core: THREE.Mesh;
+        inner: THREE.Mesh;
+        outer: THREE.Mesh;
+        coreMaterial: THREE.MeshBasicMaterial;
+        innerMaterial: THREE.MeshBasicMaterial;
+        outerMaterial: THREE.MeshBasicMaterial;
+        time: number;
+        opacity: number;
+    }> = [];
+    private enemyTrailActive: Array<{
+        group: THREE.Group;
+        core: THREE.Mesh;
+        inner: THREE.Mesh;
+        outer: THREE.Mesh;
+        coreMaterial: THREE.MeshBasicMaterial;
+        innerMaterial: THREE.MeshBasicMaterial;
+        outerMaterial: THREE.MeshBasicMaterial;
+        time: number;
+        opacity: number;
+    }> = [];
+
+    private readonly enemyTrailFadeDelay = 0.08;
+    private readonly enemyTrailFadeRate = 2.4; // opacity per second (matches ~0.04 @ 60fps)
+
+    private enemyTrailCoreGeo = new THREE.CylinderGeometry(0.008, 0.008, 1, 6, 1);
+    private enemyTrailInnerGeo = new THREE.CylinderGeometry(0.025, 0.02, 1, 8, 1);
+    private enemyTrailOuterGeo = new THREE.CylinderGeometry(0.05, 0.04, 1, 8, 1);
+
+    private tmpEnemyMuzzlePos = new THREE.Vector3();
+    private tmpEnemyTrailEnd = new THREE.Vector3();
+    private tmpEnemyTrailDir = new THREE.Vector3();
+    private tmpEnemyTrailMid = new THREE.Vector3();
+    private tmpEnemyTrailQuat = new THREE.Quaternion();
+    private readonly tmpUp = new THREE.Vector3(0, 1, 0);
 
     // 加载回调
     private onProgressCallback?: (progress: number, desc: string) => void;
@@ -153,6 +192,9 @@ export class Game {
         this.scene.add(this.camera);
 
         this.updateProgress(30, "Initializing Physics & Level...");
+
+        // Enable BVH-accelerated raycasting (static meshes will build BVH on registration)
+        enableBVH();
 
         // 物理系统 (优化)
         this.physicsSystem = new PhysicsSystem();
@@ -839,6 +881,9 @@ export class Game {
         // 更新敌人
         this.updateEnemies(playerPos, delta);
 
+        // 更新敌人弹道轨迹 (pool-based, no RAF/setTimeout)
+        this.updateEnemyBulletTrails(delta);
+
         // 更新手榴弹
         this.updateGrenades(delta);
 
@@ -990,16 +1035,15 @@ export class Game {
             // 处理敌人射击
             if (shootResult.fired) {
                 // 绘制敌人弹道轨迹
-                const muzzlePos = enemy.getMuzzleWorldPosition();
+                const muzzlePos = enemy.getMuzzleWorldPosition(this.tmpEnemyMuzzlePos);
                 // 弹道终点：命中时指向玩家相机位置，未命中时沿射击方向延伸
                 // 注意: playerPos 已经是相机位置，不需要再加偏移
-                const trailEnd = shootResult.hit
-                    ? playerPos.clone()
-                    : muzzlePos
-                          .clone()
-                          .add(
-                              enemy.lastShotDirection.clone().multiplyScalar(50)
-                          );
+                const trailEnd = this.tmpEnemyTrailEnd;
+                if (shootResult.hit) {
+                    trailEnd.copy(playerPos);
+                } else {
+                    trailEnd.copy(muzzlePos).addScaledVector(enemy.lastShotDirection, 50);
+                }
 
                 // 创建弹道轨迹 (红色，与玩家弹道区分)
                 this.createEnemyBulletTrail(muzzlePos, trailEnd);
@@ -1112,34 +1156,38 @@ export class Game {
      * 创建敌人弹道轨迹 (红色激光效果)
      */
     private createEnemyBulletTrail(start: THREE.Vector3, end: THREE.Vector3) {
-        // 克隆向量避免被后续修改影响
-        const startPos = start.clone();
-        const endPos = end.clone();
-
-        // 计算方向和长度
-        const direction = new THREE.Vector3().subVectors(endPos, startPos);
+        // 计算方向和长度 (avoid allocations)
+        const direction = this.tmpEnemyTrailDir.subVectors(end, start);
         const length = direction.length();
         if (length < 0.1) return;
-        direction.normalize();
+        direction.multiplyScalar(1 / length);
 
         // 中点位置
-        const midpoint = new THREE.Vector3()
-            .addVectors(startPos, endPos)
-            .multiplyScalar(0.5);
+        const midpoint = this.tmpEnemyTrailMid.addVectors(start, end).multiplyScalar(0.5);
+        const quaternion = this.tmpEnemyTrailQuat.setFromUnitVectors(this.tmpUp, direction);
 
-        // 计算旋转
-        const defaultDir = new THREE.Vector3(0, 1, 0);
-        const quaternion = new THREE.Quaternion();
-        quaternion.setFromUnitVectors(defaultDir, direction);
+        const trail = this.enemyTrailPool.pop() ?? this.allocateEnemyTrail();
+        trail.time = 0;
+        trail.opacity = 1;
+        trail.group.position.copy(midpoint);
+        trail.group.quaternion.copy(quaternion);
+        trail.coreMaterial.opacity = 1.0;
+        trail.innerMaterial.opacity = 0.7;
+        trail.outerMaterial.opacity = 0.35;
 
-        // 创建轨迹组
+        // Scale unit-length meshes to match trail length
+        trail.core.scale.set(1, length, 1);
+        trail.inner.scale.set(1, length, 1);
+        trail.outer.scale.set(1, length, 1);
+
+        this.scene.add(trail.group);
+        this.enemyTrailActive.push(trail);
+    }
+
+    private allocateEnemyTrail() {
         const trailGroup = new THREE.Group();
-        trailGroup.position.copy(midpoint);
-        trailGroup.quaternion.copy(quaternion);
         trailGroup.userData = { isBulletTrail: true };
 
-        // 主激光核心 (细亮线)
-        const coreGeo = new THREE.CylinderGeometry(0.008, 0.008, length, 6, 1);
         const coreMaterial = new THREE.MeshBasicMaterial({
             color: 0xff6600,
             transparent: true,
@@ -1147,17 +1195,6 @@ export class Game {
             depthWrite: false,
             blending: THREE.AdditiveBlending,
         });
-        const core = new THREE.Mesh(coreGeo, coreMaterial);
-        trailGroup.add(core);
-
-        // 内发光层
-        const innerGlowGeo = new THREE.CylinderGeometry(
-            0.025,
-            0.02,
-            length,
-            8,
-            1
-        );
         const innerGlowMaterial = new THREE.MeshBasicMaterial({
             color: 0xff3300,
             transparent: true,
@@ -1165,17 +1202,6 @@ export class Game {
             depthWrite: false,
             blending: THREE.AdditiveBlending,
         });
-        const innerGlow = new THREE.Mesh(innerGlowGeo, innerGlowMaterial);
-        trailGroup.add(innerGlow);
-
-        // 外发光层 (更大更淡)
-        const outerGlowGeo = new THREE.CylinderGeometry(
-            0.05,
-            0.04,
-            length,
-            8,
-            1
-        );
         const outerGlowMaterial = new THREE.MeshBasicMaterial({
             color: 0xff2200,
             transparent: true,
@@ -1183,33 +1209,48 @@ export class Game {
             depthWrite: false,
             blending: THREE.AdditiveBlending,
         });
-        const outerGlow = new THREE.Mesh(outerGlowGeo, outerGlowMaterial);
-        trailGroup.add(outerGlow);
 
-        this.scene.add(trailGroup);
+        const core = new THREE.Mesh(this.enemyTrailCoreGeo, coreMaterial);
+        const inner = new THREE.Mesh(this.enemyTrailInnerGeo, innerGlowMaterial);
+        const outer = new THREE.Mesh(this.enemyTrailOuterGeo, outerGlowMaterial);
+        trailGroup.add(core);
+        trailGroup.add(inner);
+        trailGroup.add(outer);
 
-        // 淡出动画
-        let opacity = 1.0;
-        const fadeOut = () => {
-            opacity -= 0.04;
-            if (opacity > 0) {
-                coreMaterial.opacity = opacity;
-                innerGlowMaterial.opacity = opacity * 0.7;
-                outerGlowMaterial.opacity = opacity * 0.35;
-                requestAnimationFrame(fadeOut);
-            } else {
-                this.scene.remove(trailGroup);
-                coreGeo.dispose();
-                coreMaterial.dispose();
-                innerGlowGeo.dispose();
-                innerGlowMaterial.dispose();
-                outerGlowGeo.dispose();
-                outerGlowMaterial.dispose();
-            }
+        return {
+            group: trailGroup,
+            core,
+            inner,
+            outer,
+            coreMaterial,
+            innerMaterial: innerGlowMaterial,
+            outerMaterial: outerGlowMaterial,
+            time: 0,
+            opacity: 1,
         };
+    }
 
-        // 延迟开始淡出
-        setTimeout(fadeOut, 80);
+    private updateEnemyBulletTrails(delta: number) {
+        for (let i = this.enemyTrailActive.length - 1; i >= 0; i--) {
+            const t = this.enemyTrailActive[i];
+            t.time += delta;
+
+            if (t.time < this.enemyTrailFadeDelay) {
+                continue;
+            }
+
+            t.opacity -= this.enemyTrailFadeRate * delta;
+            if (t.opacity > 0) {
+                t.coreMaterial.opacity = t.opacity;
+                t.innerMaterial.opacity = t.opacity * 0.7;
+                t.outerMaterial.opacity = t.opacity * 0.35;
+                continue;
+            }
+
+            this.scene.remove(t.group);
+            this.enemyTrailActive.splice(i, 1);
+            this.enemyTrailPool.push(t);
+        }
     }
 
     /**
@@ -1238,6 +1279,24 @@ export class Game {
         this.grenades.forEach((g) => {
             g.dispose();
         });
+
+        // 清理敌人弹道轨迹池
+        for (const t of this.enemyTrailActive) {
+            this.scene.remove(t.group);
+            t.coreMaterial.dispose();
+            t.innerMaterial.dispose();
+            t.outerMaterial.dispose();
+        }
+        for (const t of this.enemyTrailPool) {
+            t.coreMaterial.dispose();
+            t.innerMaterial.dispose();
+            t.outerMaterial.dispose();
+        }
+        this.enemyTrailActive = [];
+        this.enemyTrailPool = [];
+        this.enemyTrailCoreGeo.dispose();
+        this.enemyTrailInnerGeo.dispose();
+        this.enemyTrailOuterGeo.dispose();
 
         window.removeEventListener("resize", this.onWindowResize.bind(this));
         this.container.removeChild(this.renderer.domElement);

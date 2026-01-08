@@ -22,6 +22,7 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
 
     private raycastObjects: THREE.Object3D[] = [];
     private intersects: THREE.Intersection[] = [];
+    private physicsCandidates: THREE.Object3D[] = [];
 
     private tmpCurrentPos = new THREE.Vector3();
     private tmpRayOrigin = new THREE.Vector3();
@@ -222,10 +223,11 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
         }
 
         if (this.physicsSystem) {
-            const candidates = this.physicsSystem.getRaycastCandidates(
+            const candidates = this.physicsSystem.getRaycastCandidatesInto(
                 this.raycaster.ray.origin,
                 this.raycaster.ray.direction,
-                this.def.range
+                this.def.range,
+                this.physicsCandidates,
             );
             for (const obj of candidates) raycastObjects.push(obj);
         } else {

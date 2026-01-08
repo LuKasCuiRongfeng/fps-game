@@ -24,6 +24,13 @@ export class BulletTrail {
     private mainTrail: THREE.Mesh;
     private glowTrail: THREE.Mesh;
 
+    private static readonly defaultDir = new THREE.Vector3(0, 1, 0);
+    private static readonly axisX = new THREE.Vector3(1, 0, 0);
+
+    private readonly tmpDirection = new THREE.Vector3();
+    private readonly tmpMidpoint = new THREE.Vector3();
+    private readonly tmpQuaternion = new THREE.Quaternion();
+
     constructor() {
         this.trailOpacity = uniform(1.0);
         
@@ -56,29 +63,30 @@ export class BulletTrail {
         this.trailOpacity.value = 1.0;
         this.mesh.visible = true;
 
-        // 计算轨迹方向和长度
-        const direction = new THREE.Vector3().subVectors(end, start);
-        this.trailLength = Math.max(0.1, direction.length());
-        
+        // 计算轨迹方向和长度 (avoid per-shot allocations)
+        const direction = this.tmpDirection.subVectors(end, start);
+        const len = direction.length();
+        this.trailLength = Math.max(0.1, len);
+
         // 如果长度太短，隐藏
-        if (direction.length() < 0.01) {
+        if (len < 0.01) {
             this.mesh.visible = false;
             this.isDead = true;
             return;
         }
         
         // 设置位置到中点
-        const midpoint = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
-        this.mesh.position.copy(midpoint);
+        this.tmpMidpoint.addVectors(start, end).multiplyScalar(0.5);
+        this.mesh.position.copy(this.tmpMidpoint);
         
         // 计算旋转
-        direction.normalize();
-        const defaultDir = new THREE.Vector3(0, 1, 0);
-        const quaternion = new THREE.Quaternion();
-        
+        direction.multiplyScalar(1 / len);
+        const defaultDir = BulletTrail.defaultDir;
+        const quaternion = this.tmpQuaternion;
+
         const dot = defaultDir.dot(direction);
         if (Math.abs(dot) > 0.9999) {
-            if (dot < 0) quaternion.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
+            if (dot < 0) quaternion.setFromAxisAngle(BulletTrail.axisX, Math.PI);
         } else {
             quaternion.setFromUnitVectors(defaultDir, direction);
         }
@@ -175,8 +183,15 @@ export class HitEffect {
     private maxLifetime: number = 0.4;
     private particles: THREE.Mesh[] = [];
     private particleVelocities: THREE.Vector3[] = []; // 用于 CPU 端物理更新 (简单起见)
+    private particleMaterials: SpriteNodeMaterial[] = [];
     
     private currentType: 'spark' | 'blood' = 'spark';
+
+    private readonly tmpRandomDir = new THREE.Vector3();
+    private readonly tmpDir = new THREE.Vector3();
+    private readonly tmpGravityStep = new THREE.Vector3();
+    private readonly tmpMoveStep = new THREE.Vector3();
+    private static readonly GRAVITY = new THREE.Vector3(0, -9.8, 0);
 
     constructor() {
         this.group = new THREE.Group();
@@ -191,7 +206,7 @@ export class HitEffect {
         const maxParticles = 8;
         
         for (let i = 0; i < maxParticles; i++) {
-            // 默认给个材质占位
+            // 每个粒子持有自己的材质实例 (可复用，避免每次命中 clone)
             const mat = HitEffect.sparkMaterial!.clone();
             
             // 使用 Sprite 来获得更好的 Billboard 效果
@@ -200,6 +215,7 @@ export class HitEffect {
             
             this.particles.push(particle as unknown as THREE.Mesh);
             this.particleVelocities.push(new THREE.Vector3());
+            this.particleMaterials.push(mat);
             
             this.group.add(particle);
         }
@@ -261,14 +277,19 @@ export class HitEffect {
             const particle = this.particles[i] as unknown as THREE.Sprite;
             particle.visible = true;
             
-            // 设置材质
-            particle.material = baseMaterial!.clone();
+            // 复用该粒子自己的材质实例，只复制 shared material 的节点/渲染配置
+            const mat = this.particleMaterials[i];
+            mat.colorNode = baseMaterial!.colorNode;
+            mat.transparent = baseMaterial!.transparent;
+            mat.blending = baseMaterial!.blending;
+            mat.depthWrite = baseMaterial!.depthWrite;
+            particle.material = mat;
 
             const scale = type === 'spark' ? 0.05 + Math.random() * 0.05 : 0.08 + Math.random() * 0.06;
             particle.scale.set(scale, scale, 1);
             
             // 随机方向 (半球)
-            const randomDir = new THREE.Vector3(
+            const randomDir = this.tmpRandomDir.set(
                 (Math.random() - 0.5) * 2,
                 (Math.random() - 0.5) * 2,
                 (Math.random() - 0.5) * 2
@@ -278,13 +299,11 @@ export class HitEffect {
             if (randomDir.dot(normal) < 0) randomDir.negate();
             
             // 混合法线方向和随机方向
-            const dir = new THREE.Vector3().copy(normal).lerp(randomDir, 0.7).normalize();
+            const dir = this.tmpDir.copy(normal).lerp(randomDir, 0.7).normalize();
             
             // 速度
             const speed = type === 'spark' ? 2 + Math.random() * 4 : 1 + Math.random() * 2;
-            const velocity = dir.multiplyScalar(speed);
-            
-            this.particleVelocities[i].copy(velocity);
+            this.particleVelocities[i].copy(dir).multiplyScalar(speed);
             particle.position.set(0, 0, 0); 
         }
         
@@ -313,7 +332,7 @@ export class HitEffect {
         const alpha = 1.0 - Math.pow(progress, 2); // 非线性淡出
         
         // 更新物理
-        const gravity = new THREE.Vector3(0, -9.8, 0); // 重力
+           const gravity = HitEffect.GRAVITY;
         
         for (let i = 0; i < this.particles.length; i++) {
             const particle = this.particles[i];
@@ -323,12 +342,12 @@ export class HitEffect {
             
             // 施加重力和阻力
             if (this.currentType === 'blood') {
-                 velocity.add(gravity.clone().multiplyScalar(delta));
+                  velocity.add(this.tmpGravityStep.copy(gravity).multiplyScalar(delta));
             }
             velocity.multiplyScalar(0.95); // 空气阻力
             
             // 移动
-            particle.position.add(velocity.clone().multiplyScalar(delta));
+              particle.position.add(this.tmpMoveStep.copy(velocity).multiplyScalar(delta));
             
             // 更新透明度
             if (particle.material instanceof SpriteNodeMaterial) {

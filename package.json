@@ -15,7 +15,8 @@
     "@tauri-apps/plugin-opener": "^2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "tailwindcss": "^4.1.18"
+    "tailwindcss": "^4.1.18",
+    "three-mesh-bvh": "^0.9.5"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

@@ -64,6 +64,8 @@ export class PlayerController {
 
     private objects: THREE.Object3D[] = [];
 
+    private nearbyCollisionEntries: Array<{ box: THREE.Box3; object: THREE.Object3D }> = [];
+
     constructor(
         camera: THREE.Camera, 
         domElement: HTMLElement, 
@@ -586,7 +588,7 @@ export class PlayerController {
 
         // 使用物理系统获取附近的碰撞体 (空间划分优化)
         // 查询半径稍微大一点以覆盖周边
-        const nearbyEntries = this.physicsSystem.getNearbyObjects(position, 5.0);
+        const nearbyEntries = this.physicsSystem.getNearbyObjectsInto(position, 5.0, this.nearbyCollisionEntries);
         
         for (const entry of nearbyEntries) {
             // entry.box 已经是世界坐标的 AABB，直接检测

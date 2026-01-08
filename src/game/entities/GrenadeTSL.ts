@@ -53,6 +53,19 @@ export class Grenade {
     // 地面高度回调
     private groundHeightCallback: ((x: number, z: number) => number) | null = null;
 
+    private readonly tmpOldPosition = new THREE.Vector3();
+    private readonly tmpObjCenter = new THREE.Vector3();
+    private readonly tmpBounceDir = new THREE.Vector3();
+    private readonly tmpExplosionPosition = new THREE.Vector3();
+    private readonly grenadeBox = new THREE.Box3();
+    private readonly tmpObjBox = new THREE.Box3();
+
+    private static readonly DEBRIS_DIRECTION = new THREE.Vector3(0, 0.8, 0);
+    private static readonly DEBRIS_COLOR = {
+        start: new THREE.Color(0.4, 0.35, 0.3),
+        end: new THREE.Color(0.2, 0.18, 0.15)
+    };
+
     constructor(
         position: THREE.Vector3, 
         direction: THREE.Vector3, 
@@ -70,7 +83,7 @@ export class Grenade {
         this.mesh.position.copy(position);
         
         // 设置初始速度 (投掷方向 + 向上的抛物线)
-        this.velocity = direction.clone().normalize().multiplyScalar(throwStrength);
+        this.velocity = new THREE.Vector3().copy(direction).normalize().multiplyScalar(throwStrength);
         this.velocity.y += throwStrength * 0.5;  // 向上的初始速度
         
         // 随机旋转速度
@@ -214,10 +227,10 @@ export class Grenade {
         this.velocity.z *= this.friction;
         
         // 保存旧位置
-        const oldPosition = this.mesh.position.clone();
+        this.tmpOldPosition.copy(this.mesh.position);
         
         // 更新位置
-        this.mesh.position.add(this.velocity.clone().multiplyScalar(delta));
+        this.mesh.position.addScaledVector(this.velocity, delta);
         
         // 更新旋转
         this.mesh.rotation.x += this.angularVelocity.x * delta;
@@ -247,14 +260,14 @@ export class Grenade {
         }
         
         // 障碍物碰撞检测
-        this.checkObstacleCollision(oldPosition);
+        this.checkObstacleCollision(this.tmpOldPosition);
     }
     
     /**
      * 检测与障碍物的碰撞
      */
     private checkObstacleCollision(oldPosition: THREE.Vector3): void {
-        const grenadeBox = new THREE.Box3();
+        const grenadeBox = this.grenadeBox;
         const radius = WeaponConfig.grenade.radius;
         grenadeBox.min.set(
             this.mesh.position.x - radius,
@@ -268,18 +281,17 @@ export class Grenade {
         );
         
         for (const obj of this.collisionObjects) {
-            const objBox = new THREE.Box3().setFromObject(obj);
-            if (grenadeBox.intersectsBox(objBox)) {
+            this.tmpObjBox.setFromObject(obj);
+            if (grenadeBox.intersectsBox(this.tmpObjBox)) {
                 // 简单反弹
                 this.mesh.position.copy(oldPosition);
                 
                 // 计算反弹方向 (简化处理)
-                const center = new THREE.Vector3();
-                objBox.getCenter(center);
-                const bounceDir = this.mesh.position.clone().sub(center).normalize();
+                this.tmpObjBox.getCenter(this.tmpObjCenter);
+                this.tmpBounceDir.copy(oldPosition).sub(this.tmpObjCenter).normalize();
                 
                 const speed = this.velocity.length();
-                this.velocity.copy(bounceDir).multiplyScalar(speed * this.bounceFactor);
+                this.velocity.copy(this.tmpBounceDir).multiplyScalar(speed * this.bounceFactor);
                 this.angularVelocity.multiplyScalar(0.5);
                 
                 // 播放碰撞音效
@@ -300,7 +312,8 @@ export class Grenade {
         this.isExploded = true;
         this.isActive = false;
         
-        const explosionPosition = this.mesh.position.clone();
+        this.tmpExplosionPosition.copy(this.mesh.position);
+        const explosionPosition = this.tmpExplosionPosition;
         
         // 播放爆炸音效
         SoundManager.getInstance().playExplosion();
@@ -316,15 +329,12 @@ export class Grenade {
             this.particleSystem.emit({
                 type: 'debris',
                 position: explosionPosition,
-                direction: new THREE.Vector3(0, 0.8, 0),
+                direction: Grenade.DEBRIS_DIRECTION,
                 spread: Math.PI,
                 speed: { min: 15, max: 30 },
                 lifetime: { min: 0.3, max: 0.8 },
                 size: { start: 0.04, end: 0.02 },
-                color: { 
-                    start: new THREE.Color(0.4, 0.35, 0.3), 
-                    end: new THREE.Color(0.2, 0.18, 0.15) 
-                },
+                color: Grenade.DEBRIS_COLOR,
                 gravity: -35,
                 drag: 0.95,
                 count: 8
@@ -412,6 +422,7 @@ export class GrenadeHand {
     // 位置
     private restPosition = new THREE.Vector3(0.4, -0.4, -0.5);
     private throwPosition = new THREE.Vector3(0.2, 0.1, -0.3);
+    private throwEndPosition = new THREE.Vector3(0.3, -0.2, -0.8);
     
     // 回调
     private onThrowComplete: (() => void) | null = null;
@@ -509,8 +520,7 @@ export class GrenadeHand {
         } else if (this.animationProgress < 1.0) {
             // 向前投掷
             const t = (this.animationProgress - 0.5) * 2;
-            const throwEndPos = new THREE.Vector3(0.3, -0.2, -0.8);
-            this.mesh.position.lerpVectors(this.throwPosition, throwEndPos, t);
+            this.mesh.position.lerpVectors(this.throwPosition, this.throwEndPosition, t);
             this.mesh.rotation.x = -0.5 + t * 1.0;
             
             // 在投掷动作中间触发实际投掷

@@ -66,6 +66,77 @@ export class GPUParticleSystem {
     // 渲染
     private particleMesh!: THREE.InstancedMesh;
     private particleIndex: number = 0;
+
+    // Reuse vectors in emit() to avoid heavy GC on shooting
+    private readonly emitAxisX = new THREE.Vector3(1, 0, 0);
+    private readonly emitAxisY = new THREE.Vector3(0, 1, 0);
+    private readonly tmpEmitDir = new THREE.Vector3();
+    private readonly tmpSpreadDir = new THREE.Vector3();
+
+    private readonly tmpPresetPosition = new THREE.Vector3();
+    private readonly tmpPresetDirection = new THREE.Vector3();
+    private readonly tmpBloodDripDirection = new THREE.Vector3();
+    private readonly presetConfig: EmitterConfig = {
+        type: 'spark',
+        position: this.tmpPresetPosition,
+        direction: this.tmpPresetDirection,
+        spread: 0,
+        speed: { min: 0, max: 0 },
+        lifetime: { min: 0, max: 0 },
+        size: { start: 0, end: 0 },
+        color: GPUParticleSystem.COLORS.spark,
+        gravity: 0,
+        drag: 1,
+        count: 0,
+    };
+
+    private static readonly BLOOD_BRIGHT = {
+        start: new THREE.Color(1.0, 0.05, 0.02),
+        end: new THREE.Color(0.6, 0.02, 0.01),
+    };
+    private static readonly BLOOD_FOG = {
+        start: new THREE.Color(0.8, 0.03, 0.02),
+        end: new THREE.Color(0.4, 0.02, 0.01),
+    };
+    private static readonly BLOOD_DARK = {
+        start: new THREE.Color(0.7, 0.02, 0.01),
+        end: new THREE.Color(0.35, 0.01, 0.005),
+    };
+
+    private emitPreset(
+        type: ParticleType,
+        position: THREE.Vector3,
+        direction: THREE.Vector3,
+        spread: number,
+        speedMin: number,
+        speedMax: number,
+        lifeMin: number,
+        lifeMax: number,
+        sizeStart: number,
+        sizeEnd: number,
+        gravity: number,
+        drag: number,
+        count: number,
+        colorOverride?: { start: THREE.Color; end: THREE.Color }
+    ) {
+        const cfg = this.presetConfig;
+        cfg.type = type;
+        cfg.position.copy(position);
+        cfg.direction.copy(direction);
+        cfg.spread = spread;
+        cfg.speed.min = speedMin;
+        cfg.speed.max = speedMax;
+        cfg.lifetime.min = lifeMin;
+        cfg.lifetime.max = lifeMax;
+        cfg.size.start = sizeStart;
+        cfg.size.end = sizeEnd;
+        cfg.gravity = gravity;
+        cfg.drag = drag;
+        cfg.count = count;
+        cfg.color = colorOverride ?? (GPUParticleSystem.COLORS[type] || GPUParticleSystem.COLORS.spark);
+
+        this.emit(cfg);
+    }
     
     // 预设颜色
     private static readonly COLORS = {
@@ -337,6 +408,14 @@ export class GPUParticleSystem {
         const lifeArray = this.lifeBuffer.array as Float32Array;
         
         const colors = GPUParticleSystem.COLORS[config.type] || GPUParticleSystem.COLORS.spark;
+
+        // Avoid per-particle allocations in hot loops (clone/new)
+        const baseDir = this.tmpEmitDir.copy(config.direction);
+        if (baseDir.lengthSq() > 1e-10) baseDir.normalize();
+        else baseDir.set(0, 1, 0);
+        const axisX = this.emitAxisX;
+        const axisY = this.emitAxisY;
+        const spreadDir = this.tmpSpreadDir;
         
         for (let i = 0; i < config.count; i++) {
             const idx = (this.particleIndex + i) % this.maxParticles;
@@ -351,16 +430,12 @@ export class GPUParticleSystem {
             const spreadAngle2 = (Math.random() - 0.5) * config.spread;
             
             const speed = THREE.MathUtils.lerp(config.speed.min, config.speed.max, Math.random());
-            
-            // 旋转方向向量
-            const dir = config.direction.clone().normalize();
-            const perpX = new THREE.Vector3(1, 0, 0);
-            const perpY = new THREE.Vector3(0, 1, 0);
-            
+
             // 简单扩散
-            const spreadDir = dir.clone()
-                .applyAxisAngle(perpX, spreadAngle)
-                .applyAxisAngle(perpY, spreadAngle2);
+            spreadDir
+                .copy(baseDir)
+                .applyAxisAngle(axisX, spreadAngle)
+                .applyAxisAngle(axisY, spreadAngle2);
             
             velArray[idx * 3] = spreadDir.x * speed;
             velArray[idx * 3 + 1] = spreadDir.y * speed;
@@ -398,19 +473,21 @@ export class GPUParticleSystem {
      * 预设发射器 - 火花
      */
     public emitSparks(position: THREE.Vector3, direction: THREE.Vector3, count: number = 15) {
-        this.emit({
-            type: 'spark',
-            position: position,
-            direction: direction,
-            spread: Math.PI * 0.5,
-            speed: { min: 3, max: 8 },
-            lifetime: { min: 0.2, max: 0.5 },
-            size: { start: 0.03, end: 0.01 },
-            color: GPUParticleSystem.COLORS.spark,
-            gravity: -15,
-            drag: 0.95,
-            count: count
-        });
+        this.emitPreset(
+            'spark',
+            position,
+            direction,
+            Math.PI * 0.5,
+            3,
+            8,
+            0.2,
+            0.5,
+            0.03,
+            0.01,
+            -15,
+            0.95,
+            count
+        );
     }
 
     /**
@@ -419,115 +496,119 @@ export class GPUParticleSystem {
      */
     public emitBlood(position: THREE.Vector3, direction: THREE.Vector3, count: number = 10) {
         // 主血液飞溅 - 较大、较快、更亮的红色
-        this.emit({
-            type: 'blood',
-            position: position,
-            direction: direction,
-            spread: Math.PI * 0.5,
-            speed: { min: 5, max: 12 },
-            lifetime: { min: 0.5, max: 1.0 },
-            size: { start: 0.1, end: 0.03 },
-            color: { 
-                start: new THREE.Color(1.0, 0.05, 0.02),  // 亮红色
-                end: new THREE.Color(0.6, 0.02, 0.01) 
-            },
-            gravity: -12,
-            drag: 0.88,
-            count: Math.floor(count * 0.4)
-        });
+        this.emitPreset(
+            'blood',
+            position,
+            direction,
+            Math.PI * 0.5,
+            5,
+            12,
+            0.5,
+            1.0,
+            0.1,
+            0.03,
+            -12,
+            0.88,
+            Math.floor(count * 0.4),
+            GPUParticleSystem.BLOOD_BRIGHT
+        );
         
         // 细小飞沫 - 更分散、更小
-        this.emit({
-            type: 'blood',
-            position: position,
-            direction: direction,
-            spread: Math.PI * 0.7,
-            speed: { min: 3, max: 9 },
-            lifetime: { min: 0.4, max: 0.7 },
-            size: { start: 0.05, end: 0.015 },
-            color: GPUParticleSystem.COLORS.blood,
-            gravity: -18,
-            drag: 0.82,
-            count: Math.floor(count * 0.35)
-        });
+        this.emitPreset(
+            'blood',
+            position,
+            direction,
+            Math.PI * 0.7,
+            3,
+            9,
+            0.4,
+            0.7,
+            0.05,
+            0.015,
+            -18,
+            0.82,
+            Math.floor(count * 0.35)
+        );
         
         // 血雾效果 - 悬浮的细小颗粒
-        this.emit({
-            type: 'blood',
-            position: position,
-            direction: direction,
-            spread: Math.PI * 0.8,
-            speed: { min: 1, max: 4 },
-            lifetime: { min: 0.6, max: 1.2 },
-            size: { start: 0.08, end: 0.04 },
-            color: { 
-                start: new THREE.Color(0.8, 0.03, 0.02),
-                end: new THREE.Color(0.4, 0.02, 0.01) 
-            },
-            gravity: -5,
-            drag: 0.96,
-            count: Math.floor(count * 0.15)
-        });
+        this.emitPreset(
+            'blood',
+            position,
+            direction,
+            Math.PI * 0.8,
+            1,
+            4,
+            0.6,
+            1.2,
+            0.08,
+            0.04,
+            -5,
+            0.96,
+            Math.floor(count * 0.15),
+            GPUParticleSystem.BLOOD_FOG
+        );
         
         // 慢速滴落 - 重力主导
-        this.emit({
-            type: 'blood',
-            position: position,
-            direction: new THREE.Vector3(
-                direction.x * 0.2,
-                0.8,  // 向上一点点然后下落
-                direction.z * 0.2
-            ),
-            spread: Math.PI * 0.25,
-            speed: { min: 2, max: 5 },
-            lifetime: { min: 0.7, max: 1.3 },
-            size: { start: 0.07, end: 0.025 },
-            color: { 
-                start: new THREE.Color(0.7, 0.02, 0.01),  // 深血红色
-                end: new THREE.Color(0.35, 0.01, 0.005) 
-            },
-            gravity: -22,
-            drag: 0.94,
-            count: Math.floor(count * 0.1)
-        });
+        this.tmpBloodDripDirection.set(direction.x * 0.2, 0.8, direction.z * 0.2);
+        this.emitPreset(
+            'blood',
+            position,
+            this.tmpBloodDripDirection,
+            Math.PI * 0.25,
+            2,
+            5,
+            0.7,
+            1.3,
+            0.07,
+            0.025,
+            -22,
+            0.94,
+            Math.floor(count * 0.1),
+            GPUParticleSystem.BLOOD_DARK
+        );
     }
 
     /**
      * 预设发射器 - 烟雾
      */
     public emitSmoke(position: THREE.Vector3, count: number = 20) {
-        this.emit({
-            type: 'smoke',
-            position: position,
-            direction: new THREE.Vector3(0, 1, 0),
-            spread: Math.PI * 0.3,
-            speed: { min: 0.5, max: 2 },
-            lifetime: { min: 0.5, max: 1.5 },
-            size: { start: 0.1, end: 0.3 },
-            color: GPUParticleSystem.COLORS.smoke,
-            gravity: 2,  // 向上飘
-            drag: 0.98,
-            count: count
-        });
+        this.tmpPresetDirection.set(0, 1, 0);
+        this.emitPreset(
+            'smoke',
+            position,
+            this.tmpPresetDirection,
+            Math.PI * 0.3,
+            0.5,
+            2,
+            0.5,
+            1.5,
+            0.1,
+            0.3,
+            2,
+            0.98,
+            count
+        );
     }
 
     /**
      * 预设发射器 - 枪口火焰
      */
     public emitMuzzleFlash(position: THREE.Vector3, direction: THREE.Vector3) {
-        this.emit({
-            type: 'muzzle',
-            position: position,
-            direction: direction,
-            spread: Math.PI * 0.2,
-            speed: { min: 5, max: 10 },
-            lifetime: { min: 0.05, max: 0.1 },
-            size: { start: 0.05, end: 0.02 },
-            color: GPUParticleSystem.COLORS.muzzle,
-            gravity: 0,
-            drag: 0.9,
-            count: 8
-        });
+        this.emitPreset(
+            'muzzle',
+            position,
+            direction,
+            Math.PI * 0.2,
+            5,
+            10,
+            0.05,
+            0.1,
+            0.05,
+            0.02,
+            0,
+            0.9,
+            8
+        );
     }
 
     /**
@@ -535,19 +616,22 @@ export class GPUParticleSystem {
      */
     public emitExplosion(position: THREE.Vector3, count: number = 50) {
         // 火焰
-        this.emit({
-            type: 'explosion',
-            position: position,
-            direction: new THREE.Vector3(0, 1, 0),
-            spread: Math.PI,  // 全方向
-            speed: { min: 3, max: 8 },
-            lifetime: { min: 0.3, max: 0.8 },
-            size: { start: 0.15, end: 0.05 },
-            color: GPUParticleSystem.COLORS.explosion,
-            gravity: -5,
-            drag: 0.95,
-            count: count
-        });
+        this.tmpPresetDirection.set(0, 1, 0);
+        this.emitPreset(
+            'explosion',
+            position,
+            this.tmpPresetDirection,
+            Math.PI,
+            3,
+            8,
+            0.3,
+            0.8,
+            0.15,
+            0.05,
+            -5,
+            0.95,
+            count
+        );
         
         // 烟雾
         this.emitSmoke(position, count / 2);

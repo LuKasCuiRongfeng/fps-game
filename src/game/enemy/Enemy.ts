@@ -70,6 +70,24 @@ export class Enemy {
     
     // 射击状态 (供外部读取)
     public lastShotHit: boolean = false;
+    
+        // Reuse objects for raycasting/LOS checks
+        private losRaycaster = new THREE.Raycaster();
+        private losEye = new THREE.Vector3();
+        private losDir = new THREE.Vector3();
+        private losCandidates: THREE.Object3D[] = [];
+        private losIntersects: THREE.Intersection[] = [];
+
+        private nearbyCollisionEntries: Array<{ box: THREE.Box3; object: THREE.Object3D }> = [];
+
+        private tmpToPlayer = new THREE.Vector3();
+        private tmpMoveDir = new THREE.Vector3();
+        private tmpNextPosX = new THREE.Vector3();
+        private tmpNextPosZ = new THREE.Vector3();
+        private tmpYawDir = new THREE.Vector3();
+        private tmpMuzzleWorldPos = new THREE.Vector3();
+        private tmpTargetPos = new THREE.Vector3();
+        private tmpShotDir = new THREE.Vector3();
     public lastShotDirection: THREE.Vector3 = new THREE.Vector3();
     
     // 视线检测优化
@@ -186,10 +204,10 @@ export class Enemy {
             }
         }
 
-        // 计算到玩家的距离和方向
-        const toPlayer = new THREE.Vector3().subVectors(playerPosition, this.mesh.position);
-        const distanceToPlayer = toPlayer.length();
-        toPlayer.normalize();
+        // 计算到玩家的距离和方向 (avoid per-frame allocations)
+        this.tmpToPlayer.subVectors(playerPosition, this.mesh.position);
+        const distanceToPlayer = this.tmpToPlayer.length();
+        if (distanceToPlayer > 0.00001) this.tmpToPlayer.multiplyScalar(1 / distanceToPlayer);
         
         // 性能优化: LOD 处理
         // 如果距离较远，隐藏细节部件
@@ -261,8 +279,9 @@ export class Enemy {
         // 跟随路径
         if (this.currentPath.length > 0) {
             const nextPoint = this.currentPath[0];
-            const dist = new THREE.Vector2(this.mesh.position.x, this.mesh.position.z)
-                .distanceTo(new THREE.Vector2(nextPoint.x, nextPoint.z));
+            const dx = nextPoint.x - this.mesh.position.x;
+            const dz = nextPoint.z - this.mesh.position.z;
+            const dist = Math.sqrt(dx * dx + dz * dz);
                 
             if (dist < 0.5) {
                 this.currentPath.shift();
@@ -275,15 +294,14 @@ export class Enemy {
         }
 
         // 移动计算
-        const direction = new THREE.Vector3()
-            .subVectors(targetPos, this.mesh.position);
+        const direction = this.tmpMoveDir.subVectors(targetPos, this.mesh.position);
         direction.y = 0;
         direction.normalize();
 
         const moveDistance = this.speed * delta;
 
         // X 轴移动
-        const nextPosX = this.mesh.position.clone();
+        const nextPosX = this.tmpNextPosX.copy(this.mesh.position);
         nextPosX.x += direction.x * moveDistance;
         
         let collisionBox = this.checkCollisions(nextPosX, obstacles, false);
@@ -294,7 +312,7 @@ export class Enemy {
         }
 
         // Z 轴移动
-        const nextPosZ = this.mesh.position.clone();
+        const nextPosZ = this.tmpNextPosZ.copy(this.mesh.position);
         nextPosZ.z += direction.z * moveDistance;
         
         collisionBox = this.checkCollisions(nextPosZ, obstacles, false);
@@ -329,7 +347,7 @@ export class Enemy {
         // 计算目标朝向
         if (this.isAiming) {
             // 瞄准时朝向玩家
-            const toPlayerDir = new THREE.Vector3().subVectors(playerPosition, this.mesh.position);
+            const toPlayerDir = this.tmpYawDir.subVectors(playerPosition, this.mesh.position);
             toPlayerDir.y = 0;
             if (toPlayerDir.lengthSq() > 0.001) {
                 this.targetRotation = Math.atan2(toPlayerDir.x, toPlayerDir.z);
@@ -364,27 +382,30 @@ export class Enemy {
      * 优化：使用 PhysicsSystem 网格遍历，避免检测全场景
      */
     private canSeePlayer(playerPosition: THREE.Vector3): boolean {
-        const eyePosition = this.mesh.position.clone();
-        eyePosition.y += 1.7; // 眼睛高度
-        
-        const direction = new THREE.Vector3().subVectors(playerPosition, eyePosition);
-        const distance = direction.length();
-        direction.normalize();
-        
-        const raycaster = new THREE.Raycaster(eyePosition, direction, 0, distance);
+        this.losEye.copy(this.mesh.position);
+        this.losEye.y += 1.7; // 眼睛高度
+
+        this.losDir.subVectors(playerPosition, this.losEye);
+        const distance = this.losDir.length();
+        this.losDir.normalize();
+
+        this.losRaycaster.set(this.losEye, this.losDir);
+        this.losRaycaster.near = 0;
+        this.losRaycaster.far = distance;
         
         // 1. 使用 PhysicsSystem 获取候选物体 (Broad Phase)
         // 如果没有 PhysicsSystem，则无法检测遮挡 (默认可见)
         if (!this.physicsSystem) return true;
-        
-        const candidates = this.physicsSystem.getRaycastCandidates(eyePosition, direction, distance);
+
+        const candidates = this.physicsSystem.getRaycastCandidatesInto(this.losEye, this.losDir, distance, this.losCandidates);
         
         // 2. 精确检测 (Raycast)
         // 不需要过滤 blockedObjects，因为 PhysicsSystem 只包含静态障碍物
-        const intersects = raycaster.intersectObjects(candidates, true);
+        this.losIntersects.length = 0;
+        this.losRaycaster.intersectObjects(candidates, true, this.losIntersects);
         
         // 如果没有障碍物遮挡，可以看到玩家
-        return intersects.length === 0;
+        return this.losIntersects.length === 0;
     }
     
     /**
@@ -401,14 +422,14 @@ export class Enemy {
         // 计算射击方向 (带散布)
         // 优化: 不强制更新整个矩阵树，接受一帧的延迟或使用上一帧的矩阵
         // this.mesh.updateMatrixWorld(true);
-        const muzzleWorldPos = new THREE.Vector3();
+        const muzzleWorldPos = this.tmpMuzzleWorldPos;
         this.muzzlePoint.getWorldPosition(muzzleWorldPos);
         
         // 玩家躯干位置 (稍微降低目标点)
-        const targetPos = playerPosition.clone();
+        const targetPos = this.tmpTargetPos.copy(playerPosition);
         targetPos.y += EnemyConfig.collision.targetHeightOffset; // 瞄准躯干
         
-        const direction = new THREE.Vector3().subVectors(targetPos, muzzleWorldPos);
+        const direction = this.tmpShotDir.subVectors(targetPos, muzzleWorldPos);
         direction.normalize();
         
         // 保存射击方向 (供外部使用，如弹道效果)
@@ -434,11 +455,13 @@ export class Enemy {
     /**
      * 获取枪口世界坐标 (供外部使用绘制弹道)
      */
-    public getMuzzleWorldPosition(): THREE.Vector3 {
+    public getMuzzleWorldPosition(): THREE.Vector3;
+    public getMuzzleWorldPosition(out: THREE.Vector3): THREE.Vector3;
+    public getMuzzleWorldPosition(out?: THREE.Vector3): THREE.Vector3 {
         // 确保矩阵已更新
         this.mesh.updateMatrixWorld(true);
-        
-        const pos = new THREE.Vector3();
+
+        const pos = out ?? new THREE.Vector3();
         this.muzzlePoint.getWorldPosition(pos);
         return pos;
     }
@@ -509,7 +532,7 @@ export class Enemy {
         
         // 优化：优先使用物理系统
         if (this.physicsSystem) {
-            const nearbyEntries = this.physicsSystem.getNearbyObjects(position, 5.0);
+            const nearbyEntries = this.physicsSystem.getNearbyObjectsInto(position, 5.0, this.nearbyCollisionEntries);
             for (const entry of nearbyEntries) {
                 // box 已经是世界坐标
                  if (position.x >= entry.box.min.x - checkRadius &&
@@ -591,7 +614,7 @@ export class Enemy {
 
         // 优化：优先使用物理系统 (Spatial Grid)
         if (this.physicsSystem) {
-            const nearbyEntries = this.physicsSystem.getNearbyObjects(position, 5.0);
+            const nearbyEntries = this.physicsSystem.getNearbyObjectsInto(position, 5.0, this.nearbyCollisionEntries);
             for (const entry of nearbyEntries) {
                 // entry.box 已经是世界坐标 AABB
                 if (enemyBox.intersectsBox(entry.box)) {

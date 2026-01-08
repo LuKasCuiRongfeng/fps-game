@@ -19,6 +19,22 @@ export class Weapon {
     private camera: THREE.Camera;
     private mesh: THREE.Mesh;
     private raycaster: THREE.Raycaster;
+
+    private readonly zeroNDC = new THREE.Vector2(0, 0);
+    private raycastObjects: THREE.Object3D[] = [];
+    private raycastIntersects: THREE.Intersection[] = [];
+    private tmpRayOrigin = new THREE.Vector3();
+    private tmpRayDirection = new THREE.Vector3();
+    private tmpRaymarchPos = new THREE.Vector3();
+    private tmpBinaryPos = new THREE.Vector3();
+    private tmpGroundHitPoint = new THREE.Vector3();
+    private tmpCurrentPos = new THREE.Vector3();
+    private tmpMuzzleWorldPos = new THREE.Vector3();
+    private tmpHitPoint = new THREE.Vector3();
+    private tmpHitNormal = new THREE.Vector3();
+    private readonly tmpUp = new THREE.Vector3(0, 1, 0);
+    private tmpBloodDirection = new THREE.Vector3();
+    private tmpTrailEnd = new THREE.Vector3();
     
     // 枪口火焰
     private flashMesh: THREE.Mesh;
@@ -43,6 +59,8 @@ export class Weapon {
     
     private enemies: Enemy[] = [];
     private physicsSystem: PhysicsSystem | null = null;
+
+    private physicsCandidates: THREE.Object3D[] = [];
     
     // 枪口位置辅助点 (用于获取世界坐标)
     private muzzlePoint: THREE.Object3D;
@@ -161,11 +179,13 @@ export class Weapon {
     /**
      * 获取枪口世界坐标
      */
-    public getMuzzleWorldPosition(): THREE.Vector3 {
+    public getMuzzleWorldPosition(): THREE.Vector3;
+    public getMuzzleWorldPosition(out: THREE.Vector3): THREE.Vector3;
+    public getMuzzleWorldPosition(out?: THREE.Vector3): THREE.Vector3 {
         // 确保整个层级的矩阵已更新 (相机 -> 武器 -> 枪口)
         this.camera.updateMatrixWorld(true);
-        
-        const worldPos = new THREE.Vector3();
+
+        const worldPos = out ?? new THREE.Vector3();
         this.muzzlePoint.getWorldPosition(worldPos);
         return worldPos;
     }
@@ -196,11 +216,12 @@ export class Weapon {
         this.applyRecoil();
 
         // 射线检测
-        this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+        this.raycaster.setFromCamera(this.zeroNDC, this.camera);
         
         // 性能优化：过滤掉地面，只检测物体
         // 地面检测使用数学方法 (Raymarching)
-        const raycastObjects: THREE.Object3D[] = [];
+        const raycastObjects = this.raycastObjects;
+        raycastObjects.length = 0;
         
         // 1. 优先添加动态敌人 (最重要)
         if (this.enemies.length > 0) {
@@ -216,10 +237,11 @@ export class Weapon {
             // 使用 PhysicsSystem 的 DDA 算法精确定位射线路径上的物体
             // 相比 getNearbyObjects(60m)，这支持超远距离射击且性能更好
             const maxDistance = WeaponConfig.gun.range || 500;
-            const candidates = this.physicsSystem.getRaycastCandidates(
+            const candidates = this.physicsSystem.getRaycastCandidatesInto(
                 this.raycaster.ray.origin, 
                 this.raycaster.ray.direction, 
-                maxDistance
+                maxDistance,
+                this.physicsCandidates,
             );
             
             // 添加候选物体到检测列表
@@ -242,12 +264,13 @@ export class Weapon {
             }
         }
 
-        const intersects = this.raycaster.intersectObjects(raycastObjects, true);
+        this.raycastIntersects.length = 0;
+        this.raycaster.intersectObjects(raycastObjects, true, this.raycastIntersects);
+        const intersects = this.raycastIntersects;
 
         // 获取射线起点和方向用于弹道
-        const rayOrigin = this.raycaster.ray.origin.clone();
-        const rayDirection = this.raycaster.ray.direction.clone();
-        rayDirection.normalize();
+        const rayOrigin = this.tmpRayOrigin.copy(this.raycaster.ray.origin);
+        const rayDirection = this.tmpRayDirection.copy(this.raycaster.ray.direction).normalize();
 
         let hitPoint: THREE.Vector3 | null = null;
         let hitNormal: THREE.Vector3 | null = null;
@@ -280,8 +303,8 @@ export class Weapon {
             }
             if (shouldSkip) continue;
 
-            hitPoint = intersect.point.clone();
-            hitNormal = intersect.face?.normal?.clone() || new THREE.Vector3(0, 1, 0);
+            hitPoint = this.tmpHitPoint.copy(intersect.point);
+            hitNormal = this.tmpHitNormal.copy(intersect.face?.normal ?? this.tmpUp);
             
             // 法线转世界坐标
             if (intersect.face && obj.matrixWorld) {
@@ -305,14 +328,14 @@ export class Weapon {
             // 步长 1.0m (精度要求不高，主要为了性能)
             const stepSize = 1.0; 
             
-            // 起点
-            const currentPos = rayOrigin.clone();
             let dist = 0;
+            const currentPos = this.tmpRaymarchPos;
             
             // 粗略步进
             while (dist < maxDist) {
-                currentPos.add(rayDirection.clone().multiplyScalar(stepSize));
                 dist += stepSize;
+
+                currentPos.copy(rayOrigin).addScaledVector(rayDirection, dist);
                 
                 const terrainHeight = this.onGetGroundHeight(currentPos.x, currentPos.z);
                 
@@ -324,7 +347,7 @@ export class Weapon {
                     let high = dist;
                     for(let i=0; i<4; i++) { // 4次迭代足够精确
                         const mid = (low + high) / 2;
-                        const p = rayOrigin.clone().add(rayDirection.clone().multiplyScalar(mid));
+                        const p = this.tmpBinaryPos.copy(rayOrigin).addScaledVector(rayDirection, mid);
                         const h = this.onGetGroundHeight(p.x, p.z);
                         if (p.y < h) {
                             high = mid; // 还在地下，往回缩
@@ -334,24 +357,24 @@ export class Weapon {
                     }
                     
                     const hitDist = (low + high) / 2;
-                    groundHitPoint = rayOrigin.clone().add(rayDirection.clone().multiplyScalar(hitDist));
+                    groundHitPoint = this.tmpGroundHitPoint.copy(rayOrigin).addScaledVector(rayDirection, hitDist);
                     
                     // 检查是否比物体碰撞点更近
                     if (hitPoint) {
                         const distToObj = rayOrigin.distanceTo(hitPoint);
                         if (hitDist < distToObj) {
                             // 地面更近，覆盖物体结果
-                            hitPoint = groundHitPoint;
+                            hitPoint.copy(groundHitPoint);
                             // 地面法线比较复杂，这里简单模拟向上的法线，或者通过采样周围点计算
                             // 简单起见：向上，稍微带点随机扰动模拟粗糙
-                            hitNormal = new THREE.Vector3(0, 1, 0); 
+                            hitNormal = this.tmpHitNormal.copy(this.tmpUp);
                             hitObject = null; // 标记为非物体命中
                             hitEnemy = null;
                         }
                     } else {
                         // 之前没命中物体，现在命中了地面
-                        hitPoint = groundHitPoint;
-                        hitNormal = new THREE.Vector3(0, 1, 0);
+                        hitPoint = this.tmpHitPoint.copy(groundHitPoint);
+                        hitNormal = this.tmpHitNormal.copy(this.tmpUp);
                         hitObject = null;
                     }
                     
@@ -376,7 +399,7 @@ export class Weapon {
                 }
                 
                 // 计算血液飞溅方向
-                const bloodDirection = rayDirection.clone().negate().add(hitNormal!).normalize();
+                const bloodDirection = this.tmpBloodDirection.copy(rayDirection).negate().add(hitNormal!).normalize();
                 
                 // 粒子特效
                 if (this.particleSystem) {
@@ -397,18 +420,17 @@ export class Weapon {
         }
 
         // 获取枪口世界坐标作为弹道起点
-        const muzzlePos = this.getMuzzleWorldPosition();
+        const muzzlePos = this.getMuzzleWorldPosition(this.tmpMuzzleWorldPos);
         
         // 创建弹道轨迹
         // ... (原有逻辑)
-        let trailEnd: THREE.Vector3;
-        
+        const trailEnd = this.tmpTrailEnd;
         if (hitPoint) {
-            trailEnd = hitPoint.clone();
+            trailEnd.copy(hitPoint);
         } else {
-            trailEnd = muzzlePos.clone().add(rayDirection.clone().multiplyScalar(WeaponConfig.gun.range));
+            trailEnd.copy(muzzlePos).addScaledVector(rayDirection, WeaponConfig.gun.range);
         }
-        
+
         this.createBulletTrail(muzzlePos, trailEnd);
         
         // 枪口火焰粒子
@@ -519,7 +541,7 @@ export class Weapon {
         }
         
         // 计算当前武器位置 (在腻射和瞄准位置之间插值)
-        const currentPos = new THREE.Vector3().lerpVectors(
+        const currentPos = this.tmpCurrentPos.lerpVectors(
             this.hipPosition,
             this.adsPosition,
             this.aimProgress
