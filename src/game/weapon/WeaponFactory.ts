@@ -6,43 +6,250 @@ import {
 } from 'three/tsl';
 
 export class WeaponFactory {
+
+    /**
+     * 创建玩家武器网格（按武器类型）
+     * 返回 mesh、枪口位置辅助点，以及建议的 Hip/ADS 位置
+     */
+    static createPlayerWeaponMesh(weaponId: string): {
+        mesh: THREE.Mesh,
+        muzzlePoint: THREE.Object3D,
+        hipPosition: THREE.Vector3,
+        adsPosition: THREE.Vector3,
+    } {
+        // 通用材质
+        const material = this.createWeaponMaterial();
+
+        // 基础 mesh（以 Box 作为承载）
+        const bodyGeo = new THREE.BoxGeometry(0.08, 0.12, 0.5);
+        const mesh = new THREE.Mesh(bodyGeo, material);
+        mesh.castShadow = true;
+
+        // 枪口
+        const muzzlePoint = new THREE.Object3D();
+        mesh.add(muzzlePoint);
+
+        // 默认位置
+        let hip = new THREE.Vector3(0.3, -0.25, -0.6);
+        let ads = new THREE.Vector3(0, -0.18, -0.4);
+
+        // 形态参数
+        let barrelLength = 0.3;
+        let barrelRadius = 0.022;
+        let muzzleZ = -0.45;
+        let hasScope = false;
+
+        if (weaponId === 'pistol') {
+            mesh.scale.set(0.85, 0.85, 0.75);
+            barrelLength = 0.18;
+            barrelRadius = 0.02;
+            muzzleZ = -0.33;
+            hip = new THREE.Vector3(0.32, -0.28, -0.55);
+            ads = new THREE.Vector3(0, -0.2, -0.38);
+        } else if (weaponId === 'smg') {
+            mesh.scale.set(0.9, 0.9, 0.9);
+            barrelLength = 0.26;
+            barrelRadius = 0.02;
+            muzzleZ = -0.42;
+        } else if (weaponId === 'shotgun') {
+            mesh.scale.set(1.05, 1.0, 1.2);
+            barrelLength = 0.45;
+            barrelRadius = 0.028;
+            muzzleZ = -0.65;
+            hip = new THREE.Vector3(0.32, -0.26, -0.65);
+            ads = new THREE.Vector3(0, -0.19, -0.48);
+        } else if (weaponId === 'sniper') {
+            mesh.scale.set(1.0, 1.0, 1.45);
+            barrelLength = 0.55;
+            barrelRadius = 0.02;
+            muzzleZ = -0.9;
+            hasScope = true;
+            hip = new THREE.Vector3(0.34, -0.24, -0.7);
+            ads = new THREE.Vector3(0, -0.18, -0.52);
+        } else if (weaponId === 'bow') {
+            // 用简化弓模型替代枪
+            const bow = this.createPlayerBow(material);
+            // 用 bow 替代 mesh 的几何表现
+            mesh.geometry.dispose();
+            mesh.geometry = new THREE.BoxGeometry(0.01, 0.01, 0.01);
+            mesh.add(bow);
+            mesh.scale.set(1, 1, 1);
+            muzzleZ = -0.55;
+            hip = new THREE.Vector3(0.28, -0.26, -0.62);
+            ads = new THREE.Vector3(0, -0.18, -0.46);
+        }
+
+        // 枪身位置（保持与旧 Weapon 视觉一致）
+        mesh.position.copy(hip);
+
+        // 枪管
+        if (weaponId !== 'bow') {
+            const barrelGeo = new THREE.CylinderGeometry(barrelRadius, barrelRadius * 1.2, barrelLength, 8);
+            const barrelMesh = new THREE.Mesh(barrelGeo, material);
+            barrelMesh.rotation.x = Math.PI / 2;
+            barrelMesh.position.set(0, 0.02, -0.3 - (barrelLength - 0.3) * 0.6);
+            mesh.add(barrelMesh);
+
+            // 简易瞄具
+            const sightGeo = new THREE.BoxGeometry(0.02, 0.04, 0.02);
+            const sightMesh = new THREE.Mesh(sightGeo, material);
+            sightMesh.position.set(0, 0.08, -0.1);
+            mesh.add(sightMesh);
+        }
+
+        // 倍镜（狙击）
+        if (hasScope) {
+            const scopeMesh = this.createScope(material);
+            mesh.add(scopeMesh);
+        }
+
+        // 设置枪口点
+        muzzlePoint.position.set(0, 0.02, muzzleZ);
+
+        return { mesh, muzzlePoint, hipPosition: hip, adsPosition: ads };
+    }
+
+    /**
+     * 创建玩家近战武器模型（knife/axe）
+     */
+    static createPlayerMeleeMesh(weaponId: string): THREE.Group {
+        const group = new THREE.Group();
+        const metal = this.createWeaponMaterial();
+        const wood = new MeshStandardNodeMaterial({ roughness: 0.75, metalness: 0.05 });
+        wood.colorNode = vec3(0.25, 0.18, 0.1);
+
+        // Viewmodel base (keep geometry centered around origin; offset the group instead)
+        group.position.set(0.3, -0.26, -0.62);
+        group.rotation.set(0, 0, -0.18);
+
+        if (weaponId === 'axe') {
+            // Handle
+            const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.024, 0.62, 10), wood);
+            handle.position.set(-0.05, -0.08, 0);
+            handle.rotation.z = Math.PI / 2;
+            handle.castShadow = true;
+            group.add(handle);
+
+            // Pommel
+            const pommel = new THREE.Mesh(new THREE.SphereGeometry(0.028, 10, 10), wood);
+            pommel.position.set(-0.36, -0.08, 0);
+            pommel.castShadow = true;
+            group.add(pommel);
+
+            // Axe head body
+            const headBody = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.06), metal);
+            headBody.position.set(0.18, -0.08, 0);
+            headBody.castShadow = true;
+            group.add(headBody);
+
+            // Axe blade (simple wedge)
+            const blade = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.16, 12), metal);
+            blade.rotation.z = Math.PI / 2;
+            blade.position.set(0.26, -0.08, 0);
+            blade.castShadow = true;
+            group.add(blade);
+        } else if (weaponId === 'scythe') {
+            // Scythe: long handle + curved blade
+            const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.02, 0.78, 10), wood);
+            handle.position.set(-0.06, -0.10, 0);
+            handle.rotation.z = Math.PI / 2;
+            handle.castShadow = true;
+            group.add(handle);
+
+            const gripWrap = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.12, 10), wood);
+            gripWrap.position.set(-0.28, -0.10, 0);
+            gripWrap.rotation.z = Math.PI / 2;
+            gripWrap.castShadow = true;
+            group.add(gripWrap);
+
+            // Tang
+            const tang = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.02, 0.02), metal);
+            tang.position.set(0.32, -0.10, 0);
+            tang.castShadow = true;
+            group.add(tang);
+
+            // Curved blade (torus segment)
+            const bladeArc = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.012, 10, 18, Math.PI * 0.95), metal);
+            bladeArc.rotation.z = Math.PI / 2;
+            bladeArc.rotation.y = Math.PI / 2;
+            bladeArc.position.set(0.38, 0.04, 0);
+            bladeArc.castShadow = true;
+            group.add(bladeArc);
+
+            // Tip
+            const tip = new THREE.Mesh(new THREE.ConeGeometry(0.012, 0.06, 10), metal);
+            tip.rotation.z = Math.PI / 2;
+            tip.position.set(0.50, 0.04, 0);
+            tip.castShadow = true;
+            group.add(tip);
+        } else {
+            // Knife: grip + guard + blade + tip
+            const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.02, 0.18, 10), wood);
+            grip.position.set(-0.08, -0.11, 0);
+            grip.rotation.z = Math.PI / 2;
+            grip.castShadow = true;
+            group.add(grip);
+
+            const guard = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.05, 0.06), metal);
+            guard.position.set(0.02, -0.11, 0);
+            guard.castShadow = true;
+            group.add(guard);
+
+            const blade = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.03, 0.02), metal);
+            blade.position.set(0.18, -0.10, 0);
+            blade.castShadow = true;
+            group.add(blade);
+
+            const tip = new THREE.Mesh(new THREE.ConeGeometry(0.014, 0.06, 10), metal);
+            tip.rotation.z = -Math.PI / 2;
+            tip.position.set(0.34, -0.10, 0);
+            tip.castShadow = true;
+            group.add(tip);
+        }
+
+        return group;
+    }
+
+    private static createPlayerBow(material: MeshStandardNodeMaterial): THREE.Group {
+        const g = new THREE.Group();
+        // 弓身（两个半圆弧）
+        const limbGeo = new THREE.TorusGeometry(0.18, 0.01, 8, 18, Math.PI);
+        const limb = new THREE.Mesh(limbGeo, material);
+        limb.rotation.z = Math.PI / 2;
+        limb.position.set(0.0, 0.0, -0.55);
+        g.add(limb);
+
+        // 握把
+        const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.02, 0.18, 8), material);
+        grip.rotation.z = Math.PI / 2;
+        grip.position.set(0.12, -0.02, -0.55);
+        g.add(grip);
+
+        // 弓弦（细线，用 cylinder 近似）
+        const stringGeo = new THREE.CylinderGeometry(0.002, 0.002, 0.36, 6);
+        const stringMat = new MeshBasicNodeMaterial();
+        stringMat.colorNode = vec3(0.9, 0.9, 0.9);
+        const bowString = new THREE.Mesh(stringGeo, stringMat);
+        bowString.rotation.z = Math.PI / 2;
+        bowString.position.set(-0.05, 0.0, -0.55);
+        g.add(bowString);
+
+        // 整体位置/缩放
+        g.position.set(0.3, -0.25, 0);
+        return g;
+    }
     
     /**
      * 创建武器网格
      * 返回武器网格、瞄准镜组和枪口位置辅助点
      */
     static createWeaponMesh(): { mesh: THREE.Mesh, scopeMesh: THREE.Group, muzzlePoint: THREE.Object3D } {
-        // 组合几何体创建枪形
-        const bodyGeo = new THREE.BoxGeometry(0.08, 0.12, 0.5);
-        const material = this.createWeaponMaterial();
-        
-        const mesh = new THREE.Mesh(bodyGeo, material);
-        mesh.position.set(0.3, -0.25, -0.6);
-        mesh.castShadow = true;
-        
-        // 添加枪管
-        const barrelGeo = new THREE.CylinderGeometry(0.02, 0.025, 0.3, 8);
-        const barrelMesh = new THREE.Mesh(barrelGeo, material);
-        barrelMesh.rotation.x = Math.PI / 2;
-        barrelMesh.position.set(0, 0.02, -0.3);
-        mesh.add(barrelMesh);
-        
-        // 添加瞄准器
-        const sightGeo = new THREE.BoxGeometry(0.02, 0.04, 0.02);
-        const sightMesh = new THREE.Mesh(sightGeo, material);
-        sightMesh.position.set(0, 0.08, -0.1);
-        mesh.add(sightMesh);
-        
-        // 添加倍镜
-        const scopeMesh = this.createScope(material);
-        mesh.add(scopeMesh);
-        
-        // 创建枪口位置辅助点
-        const muzzlePoint = new THREE.Object3D();
-        this.updateMuzzlePosition(muzzlePoint);
-        mesh.add(muzzlePoint);
-        
-        return { mesh, scopeMesh, muzzlePoint };
+        // 兼容旧逻辑：默认创建 rifle 风格
+        const assets = this.createPlayerWeaponMesh('rifle');
+        // 旧 API 需要 scopeMesh，这里提供一个空 group（ranged weapon 自己决定是否创建 scope）
+        const scopeMesh = new THREE.Group();
+        assets.mesh.add(scopeMesh);
+        return { mesh: assets.mesh, scopeMesh, muzzlePoint: assets.muzzlePoint };
     }
 
     // 将枪口位置设置逻辑抽取出来

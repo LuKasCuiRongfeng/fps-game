@@ -228,6 +228,10 @@ export class TreeSystem {
             if (matrices.length > 0) {
                 const trunkMesh = new THREE.InstancedMesh(def.trunkGeo, def.trunkMat, matrices.length);
                 const leavesMesh = new THREE.InstancedMesh(def.leavesGeo, def.leavesMat, matrices.length);
+
+                // 标记为树木（用于近战斧头用途：砍树）
+                trunkMesh.userData = { isTree: true, treeType: def.type, treePart: 'trunk', pairedMesh: leavesMesh };
+                leavesMesh.userData = { isTree: true, treeType: def.type, treePart: 'leaves', pairedMesh: trunkMesh };
                 
                 trunkMesh.castShadow = true;
                 trunkMesh.receiveShadow = true;

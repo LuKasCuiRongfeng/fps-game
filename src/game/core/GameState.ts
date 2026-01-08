@@ -1,6 +1,7 @@
 import { InitialState } from './GameConfig';
+import type { WeaponId } from '../weapon/WeaponTypes';
 
-export type WeaponType = 'gun' | 'grenade';
+export type WeaponType = WeaponId;
 export type StanceType = 'stand' | 'crouch' | 'prone';
 
 export interface GameState {
@@ -26,7 +27,7 @@ export class GameStateService {
             health: InitialState.health,
             ammo: InitialState.ammo,
             grenades: InitialState.grenades,
-            currentWeapon: 'gun',
+            currentWeapon: 'rifle',
             stance: 'stand',
             score: InitialState.score,
             isGameOver: false,
@@ -88,7 +89,7 @@ export class GameStateService {
             health: InitialState.health,
             ammo: InitialState.ammo,
             grenades: InitialState.grenades,
-            currentWeapon: 'gun',
+            currentWeapon: 'rifle',
             stance: 'stand',
             score: InitialState.score,
             isGameOver: false,

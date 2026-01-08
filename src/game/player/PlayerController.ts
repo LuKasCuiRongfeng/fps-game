@@ -1,10 +1,10 @@
 import * as THREE from 'three';
-import { Weapon } from '../weapon/Weapon';
 import { SoundManager } from '../core/SoundManager';
 import { GPUParticleSystem } from '../shaders/GPUParticles';
-import { GrenadeHand } from '../entities/GrenadeTSL';
-import { GameStateService, WeaponType } from '../core/GameState';
+import { GameStateService } from '../core/GameState';
 import { PlayerConfig, WeaponConfig } from '../core/GameConfig';
+import { PlayerWeaponSystem } from '../weapon/PlayerWeaponSystem';
+import { WeaponId } from '../weapon/WeaponTypes';
 
 import { PhysicsSystem } from '../core/PhysicsSystem';
 import { Enemy } from '../enemy/Enemy';
@@ -12,8 +12,7 @@ import { Enemy } from '../enemy/Enemy';
 export class PlayerController {
     private domElement: HTMLElement;
     private camera: THREE.Camera;
-    private weapon: Weapon;
-    private grenadeHand: GrenadeHand;
+    private weaponSystem: PlayerWeaponSystem;
     private scene: THREE.Scene;
     private physicsSystem: PhysicsSystem;
     
@@ -60,16 +59,8 @@ export class PlayerController {
     private onGetGroundHeight: ((x: number, z: number) => number) | null = null;
 
     
-    // 当前武器
-    private currentWeapon: WeaponType = 'gun';
-    
     // 武器切换冷却 (防止滚轮过快切换)
     private lastWeaponSwitchTime: number = 0;
-    
-    // 连射状态
-    private isFiring: boolean = false;
-    private lastFireTime: number = 0;
-    private readonly fireInterval: number = 1000 / WeaponConfig.gun.fireRate;
 
     private objects: THREE.Object3D[] = [];
 
@@ -93,9 +84,7 @@ export class PlayerController {
         this.targetPitch = this.pitch;
         this.targetYaw = this.yaw;
 
-        this.weapon = new Weapon(camera);
-        this.weapon.setPhysicsSystem(this.physicsSystem);
-        this.grenadeHand = new GrenadeHand(camera);
+        this.weaponSystem = new PlayerWeaponSystem(camera, scene, this.physicsSystem);
 
         this.initInputListeners();
         this.initPointerLock();
@@ -105,14 +94,14 @@ export class PlayerController {
      * 设置敌人列表 (用于射击检测优化)
      */
     public setEnemies(enemies: Enemy[]) {
-        this.weapon.setEnemies(enemies);
+        this.weaponSystem.setEnemies(enemies);
     }
 
     /**
      * 设置粒子系统到武器
      */
     public setParticleSystem(particleSystem: GPUParticleSystem) {
-        this.weapon.setParticleSystem(particleSystem);
+        this.weaponSystem.setParticleSystem(particleSystem);
     }
     
     /**
@@ -127,6 +116,7 @@ export class PlayerController {
      */
     public setGrenadeThrowCallback(callback: (position: THREE.Vector3, direction: THREE.Vector3) => void) {
         this.onGrenadeThrow = callback;
+        this.weaponSystem.setGrenadeThrowCallback(callback);
     }
     
     /**
@@ -147,75 +137,7 @@ export class PlayerController {
      * 设置武器的地形高度回调
      */
     public setWeaponGroundHeightCallback(callback: (x: number, z: number) => number) {
-        this.weapon.setGroundHeightCallback(callback);
-    }
-
-    /**
-     * 切换武器
-     */
-    private switchWeapon(weapon: WeaponType): void {
-        if (this.currentWeapon === weapon) return;
-        if (this.grenadeHand.isPlaying()) return;  // 投掷动画中不能切换
-        
-        this.currentWeapon = weapon;
-        GameStateService.getInstance().setCurrentWeapon(weapon);
-        
-        if (weapon === 'gun') {
-            this.weapon.show();
-            this.grenadeHand.hide();
-        } else {
-            this.weapon.hide();
-            this.grenadeHand.show();
-        }
-        
-        // 播放切换音效
-        SoundManager.getInstance().playWeaponSwitch();
-    }
-    
-    /**
-     * 切换到下一个武器
-     */
-    private switchToNextWeapon(): void {
-        const weapons: WeaponType[] = ['gun', 'grenade'];
-        const currentIndex = weapons.indexOf(this.currentWeapon);
-        const nextIndex = (currentIndex + 1) % weapons.length;
-        this.switchWeapon(weapons[nextIndex]);
-    }
-    
-    /**
-     * 切换到上一个武器
-     */
-    private switchToPrevWeapon(): void {
-        const weapons: WeaponType[] = ['gun', 'grenade'];
-        const currentIndex = weapons.indexOf(this.currentWeapon);
-        const prevIndex = (currentIndex - 1 + weapons.length) % weapons.length;
-        this.switchWeapon(weapons[prevIndex]);
-    }
-    
-    /**
-     * 投掷手榴弹
-     */
-    private throwGrenade(): void {
-        const state = GameStateService.getInstance().getState();
-        if (state.grenades <= 0) return;
-        if (this.grenadeHand.isPlaying()) return;
-        
-        this.grenadeHand.startThrow(() => {
-            // 在动画中间触发实际投掷
-            if (this.onGrenadeThrow) {
-                // 获取投掷位置和方向
-                const throwPosition = this.camera.position.clone();
-                throwPosition.y -= 0.2;  // 稍微低一点
-                
-                const throwDirection = new THREE.Vector3();
-                this.camera.getWorldDirection(throwDirection);
-                
-                this.onGrenadeThrow(throwPosition, throwDirection);
-                
-                // 消耗手榴弹
-                GameStateService.getInstance().updateGrenades(-1);
-            }
-        });
+        this.weaponSystem.setGroundHeightCallback(callback);
     }
 
     private initPointerLock() {
@@ -234,35 +156,20 @@ export class PlayerController {
             if (!this.isLocked) return;
             
             if (event.button === 0) {  // 左键
-                if (this.currentWeapon === 'gun') {
-                    if (this.isAiming) {
-                        // 开镜状态下只能点射，不进入连射模式
-                        this.tryShoot();
-                    } else {
-                        // 腰射可以连射
-                        this.isFiring = true;
-                        // 立即射击第一发
-                        this.tryShoot();
-                    }
-                } else if (this.currentWeapon === 'grenade') {
-                    // 投掷手榴弹
-                    this.throwGrenade();
-                }
+                this.weaponSystem.onTriggerDown(this.isAiming);
             } else if (event.button === 2) {  // 右键
-                if (this.currentWeapon === 'gun') {
-                    this.isAiming = true;
-                    this.weapon.startAiming();
-                }
+                this.isAiming = true;
+                this.weaponSystem.startAiming();
             }
         });
         
         // 鼠标抬起 - 停止射击/瞄准
         this.domElement.addEventListener('mouseup', (event) => {
             if (event.button === 0) {  // 左键
-                this.isFiring = false;
+                this.weaponSystem.onTriggerUp();
             } else if (event.button === 2) {  // 右键
                 this.isAiming = false;
-                this.weapon.stopAiming();
+                this.weaponSystem.stopAiming();
             }
         });
         
@@ -276,10 +183,10 @@ export class PlayerController {
             }
             
             if (event.deltaY > 0) {
-                this.switchToNextWeapon();
+                this.weaponSystem.switchToNextWeapon();
                 this.lastWeaponSwitchTime = now;
             } else if (event.deltaY < 0) {
-                this.switchToPrevWeapon();
+                this.weaponSystem.switchToPrevWeapon();
                 this.lastWeaponSwitchTime = now;
             }
         });
@@ -294,8 +201,8 @@ export class PlayerController {
             // 退出指针锁定时取消瞄准和射击
             if (!this.isLocked) {
                 this.isAiming = false;
-                this.isFiring = false;
-                this.weapon.stopAiming();
+                this.weaponSystem.onTriggerUp();
+                this.weaponSystem.stopAiming();
             }
         });
 
@@ -305,10 +212,11 @@ export class PlayerController {
             const movementX = event.movementX || 0;
             const movementY = event.movementY || 0;
             
-            // 瞄准时降低灵敏度
-            const currentSensitivity = this.isAiming 
-                ? PlayerConfig.camera.sensitivity * PlayerConfig.camera.aimSensitivityMultiplier 
-                : PlayerConfig.camera.sensitivity;
+            // 根据武器瞄准进度降低灵敏度
+            const aimProgress = this.weaponSystem.getAimProgress();
+            const currentSensitivity = PlayerConfig.camera.sensitivity * (
+                1 - aimProgress * (1 - PlayerConfig.camera.aimSensitivityMultiplier)
+            );
 
             this.targetYaw -= movementX * currentSensitivity;
             this.targetPitch -= movementY * currentSensitivity;
@@ -374,26 +282,22 @@ export class PlayerController {
                     }
                     break;
                 case 'Digit1':
-                    // 切换到枪
-                    this.switchWeapon('gun');
+                    // 切换到主武器（默认 rifle）
+                    this.weaponSystem.switchToWeapon('rifle');
                     break;
                 case 'Digit2':
                     // 切换到手榴弹
-                    this.switchWeapon('grenade');
+                    this.weaponSystem.switchToWeapon('grenade');
                     break;
                 case 'KeyG':
                     // 快捷键投掷手榴弹 (不切换武器)
-                    if (this.currentWeapon !== 'grenade') {
-                        // 临时切换、投掷、然后切回
-                        const prevWeapon = this.currentWeapon;
-                        this.switchWeapon('grenade');
-                        this.throwGrenade();
-                        // 延迟切回
+                    {
+                        const prevWeapon = this.weaponSystem.getCurrentWeaponId();
+                        this.weaponSystem.switchToWeapon('grenade');
+                        this.weaponSystem.onTriggerDown(false);
                         setTimeout(() => {
-                            this.switchWeapon(prevWeapon);
+                            this.weaponSystem.switchToWeapon(prevWeapon);
                         }, 1000);
-                    } else {
-                        this.throwGrenade();
                     }
                     break;
                 case 'KeyT':
@@ -450,19 +354,11 @@ export class PlayerController {
             if (this.isLocked) console.log(`[PlayerController] Movement Inputs: F:${this.moveForward} B:${this.moveBackward} L:${this.moveLeft} R:${this.moveRight}`);
         }
 
-        // 更新武器动画
-        this.weapon.update(delta);
+        // 更新武器系统
+        this.weaponSystem.update(delta);
         
-        // 更新手榴弹手部动画
-        this.grenadeHand.update(delta);
-        
-        // 更新 FOV (瞄准时缩小视野，产生放大效果)
+        // 更新 FOV (由武器瞄准进度驱动)
         this.updateFOV(delta);
-        
-        // 处理连射 (只有持枪时)
-        if (this.currentWeapon === 'gun') {
-            this.updateFiring();
-        }
         
         if (this.isLocked === true) {
             // Restore physics position (remove visual offset from previous frame)
@@ -713,43 +609,21 @@ export class PlayerController {
     }
     
     /**
-     * 尝试射击 - 检查射击间隔
-     */
-    private tryShoot(): boolean {
-        const currentTime = performance.now();
-        // 开镜时射击间隔更长（模拟狙击枪拉栓）
-        const interval = this.isAiming ? this.fireInterval * 3 : this.fireInterval;
-        if (currentTime - this.lastFireTime >= interval) {
-            this.weapon.shoot(this.scene, this.isAiming);
-            this.lastFireTime = currentTime;
-            return true;
-        }
-        return false;
-    }
-    
-    /**
-     * 更新连射状态
-     */
-    private updateFiring() {
-        if (this.isFiring && this.isLocked) {
-            this.tryShoot();
-        }
-    }
-    
-    /**
      * 更新 FOV - 瞄准时平滑缩小视野
      */
     private updateFOV(delta: number) {
         const perspectiveCamera = this.camera as THREE.PerspectiveCamera;
         if (!perspectiveCamera.fov) return;
-        
-        const targetFov = this.isAiming ? PlayerConfig.camera.aimFov : PlayerConfig.camera.defaultFov;
-        
-        perspectiveCamera.fov = THREE.MathUtils.lerp(
-            perspectiveCamera.fov,
-            targetFov,
-            delta * PlayerConfig.camera.fovLerpSpeed
+
+        // 用武器瞄准进度插值 FOV（支持平滑过渡）
+        const aimProgress = this.weaponSystem.getAimProgress();
+        const targetFov = THREE.MathUtils.lerp(
+            PlayerConfig.camera.defaultFov,
+            PlayerConfig.camera.aimFov,
+            aimProgress
         );
+
+        perspectiveCamera.fov = THREE.MathUtils.lerp(perspectiveCamera.fov, targetFov, delta * PlayerConfig.camera.fovLerpSpeed);
         
         perspectiveCamera.updateProjectionMatrix();
     }
@@ -766,12 +640,7 @@ export class PlayerController {
      * 用于后处理瞄准镜效果
      */
     public getAimProgress(): number {
-        const perspectiveCamera = this.camera as THREE.PerspectiveCamera;
-        if (!perspectiveCamera.fov) return 0;
-        
-        // 根据当前FOV计算瞄准进度
-        const progress = 1 - (perspectiveCamera.fov - PlayerConfig.camera.aimFov) / (PlayerConfig.camera.defaultFov - PlayerConfig.camera.aimFov);
-        return THREE.MathUtils.clamp(progress, 0, 1);
+        return this.weaponSystem.getAimProgress();
     }
     
     /**
@@ -826,8 +695,7 @@ export class PlayerController {
     }
 
     public dispose() {
-        this.weapon.dispose();
-        this.grenadeHand.dispose();
+        this.weaponSystem.dispose();
         document.exitPointerLock();
         // Remove listeners...
     }

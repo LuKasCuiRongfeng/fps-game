@@ -13,7 +13,7 @@ function App() {
     health: 100,
     ammo: 300000,
     grenades: 1000,
-    currentWeapon: 'gun',
+    currentWeapon: 'rifle',
     stance: 'stand',
     score: 0,
     isGameOver: false,

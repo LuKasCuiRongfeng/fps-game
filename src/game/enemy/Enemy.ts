@@ -10,6 +10,7 @@ import { Pathfinding } from '../core/Pathfinding';
 import { EnemyConfig, EnemyType, EnemyTypesConfig } from '../core/GameConfig';
 import { PhysicsSystem } from '../core/PhysicsSystem';
 import { EnemyFactory } from './EnemyFactory';
+import type { WeaponId } from '../weapon/WeaponTypes';
 
 export class Enemy {
     public mesh: THREE.Group;
@@ -63,6 +64,7 @@ export class Enemy {
     private fireDamage: number;
     private accuracy: number;
     private engageRange: number;
+        private weaponId: WeaponId;
     private muzzleFlashDuration: number = EnemyConfig.attack.muzzleFlashDuration;
     private muzzleFlashTimer: number = 0;
     
@@ -88,22 +90,34 @@ export class Enemy {
     
     // 物理系统引用
     private physicsSystem: PhysicsSystem | null = null;
-    
 
-
-    constructor(position: THREE.Vector3, type: EnemyType = 'soldier') {
+        constructor(position: THREE.Vector3, type: EnemyType = 'soldier', weaponId?: WeaponId) {
         this.type = type;
         this.config = EnemyTypesConfig[type];
+
+            this.weaponId = weaponId ?? ((this.config.weapon as WeaponId) || 'rifle');
 
         // 初始化属性
         this.speed = this.config.speed;
         this.health = this.config.health;
         
-        this.fireRate = this.config.attack.fireRate;
-        this.fireRange = this.config.attack.range;
-        this.fireDamage = this.config.attack.damage;
-        this.accuracy = this.config.attack.accuracy;
-        this.engageRange = this.config.attack.engageRange;
+        // 基础参数来自敌人类型配置，再叠加武器差异
+        const baseAttack = this.config.attack;
+        const weaponScale: Record<string, { dmg: number; range: number; rate: number; acc: number }> = {
+            rifle: { dmg: 1.0, range: 1.0, rate: 1.0, acc: 1.0 },
+            smg: { dmg: 0.75, range: 0.75, rate: 1.8, acc: 0.9 },
+            shotgun: { dmg: 1.6, range: 0.55, rate: 0.75, acc: 0.85 },
+            sniper: { dmg: 2.1, range: 1.35, rate: 0.55, acc: 1.1 },
+            pistol: { dmg: 0.85, range: 0.65, rate: 1.2, acc: 0.95 },
+            bow: { dmg: 1.2, range: 0.7, rate: 0.9, acc: 0.95 },
+        };
+        const s = weaponScale[this.weaponId] ?? weaponScale.rifle;
+
+        this.fireRate = baseAttack.fireRate * s.rate;
+        this.fireRange = baseAttack.range * s.range;
+        this.fireDamage = baseAttack.damage * s.dmg;
+        this.accuracy = Math.max(0.05, Math.min(0.99, baseAttack.accuracy * s.acc));
+        this.engageRange = Math.min(baseAttack.engageRange, this.fireRange);
         this.aimSpeed = this.config.ai.aimSpeed;
 
         // TSL Uniforms
@@ -111,7 +125,7 @@ export class Enemy {
         this.dissolveAmount = uniform(0);
         
         // 创建人形敌人 (使用工厂模式)
-        const assets = EnemyFactory.createHumanoidEnemy(this.type, this.hitStrength);
+        const assets = EnemyFactory.createHumanoidEnemy(this.type, this.hitStrength, this.weaponId);
         this.mesh = assets.group;
         this.body = assets.body;
         this.head = assets.head;

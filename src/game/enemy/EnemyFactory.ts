@@ -63,7 +63,7 @@ export class EnemyFactory {
     /**
      * 创建人形敌人模型
      */
-    static createHumanoidEnemy(type: EnemyType, hitStrength: any): {
+    static createHumanoidEnemy(type: EnemyType, hitStrength: any, weaponId?: string): {
         group: THREE.Group,
         body: THREE.Mesh,
         head: THREE.Mesh,
@@ -222,7 +222,7 @@ export class EnemyFactory {
         group.add(rightArm);
         
         // ========== 武器 ==========
-        const weaponData = this.createWeapon(type);
+        const weaponData = this.createWeapon(type, weaponId);
         const weapon = weaponData.group;
         rightArm.add(weapon);
         weapon.position.set(0, -0.65, 0.2);
@@ -329,10 +329,10 @@ export class EnemyFactory {
         return leg;
     }
 
-    private static createWeapon(type: EnemyType): { group: THREE.Group, muzzlePoint: THREE.Object3D, muzzleFlash: THREE.Mesh } {
+    private static createWeapon(type: EnemyType, weaponId?: string): { group: THREE.Group, muzzlePoint: THREE.Object3D, muzzleFlash: THREE.Mesh } {
         const weapon = new THREE.Group();
         const config = EnemyTypesConfig[type]; // used only for getting weapon type logic if needed, but type is passed
-        const weaponType = config.weapon || 'rifle';
+        const weaponType = weaponId || config.weapon || 'rifle';
         
         const gunMaterial = EnemyMaterials.createGunMaterial();
         const metalMaterial = EnemyMaterials.createGunMetalMaterial();
@@ -344,7 +344,22 @@ export class EnemyFactory {
             const bodyGeos: THREE.BufferGeometry[] = [];
             const metalGeos: THREE.BufferGeometry[] = [];
             
-            if (weaponType === 'smg') {
+            if (weaponType === 'pistol') {
+                const body = new THREE.BoxGeometry(0.05, 0.06, 0.22);
+                body.translate(0, 0, 0.02);
+                bodyGeos.push(body);
+
+                const grip = new THREE.BoxGeometry(0.04, 0.09, 0.05);
+                grip.rotateX(0.25);
+                grip.translate(0, -0.08, -0.05);
+                bodyGeos.push(grip);
+
+                const barrel = new THREE.CylinderGeometry(0.012, 0.012, 0.12, 8);
+                barrel.rotateX(Math.PI / 2);
+                barrel.translate(0, 0.02, 0.18);
+                metalGeos.push(barrel);
+
+            } else if (weaponType === 'smg') {
                 const body = new THREE.BoxGeometry(0.05, 0.08, 0.3);
                 body.translate(0, 0, 0.05);
                 bodyGeos.push(body);
@@ -453,6 +468,7 @@ export class EnemyFactory {
         weapon.add(metalMesh);
         
         let muzzleZ = 0.7;
+        if (weaponType === 'pistol') muzzleZ = 0.28;
         if (weaponType === 'smg') muzzleZ = 0.4;
         if (weaponType === 'shotgun') muzzleZ = 0.65;
         if (weaponType === 'sniper') muzzleZ = 0.9;
