@@ -1,4 +1,4 @@
-这个项目的目标是开发一款第一人称 FPS 游戏
+这个项目的目标是开发一款第一人称 FPS 末日生存类游戏，有点类似饥荒，但可以有新颖的玩法
 
 技术：前端 src 目录下，react，tailwindcss，渲染使用three.js，TSL（必须是webgpu） 写shader，后端 src-tauri目录下，使用rust
 
