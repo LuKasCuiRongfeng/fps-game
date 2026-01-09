@@ -65,8 +65,8 @@ export class Level {
     }
     
     public update(deltaTime: number, playerPos: THREE.Vector3) {
-        // TSL shaders handle animation via global timers
-        // Systems (Tree/Grass) currently static or GPU-animated
+        // TSL shaders handle animation via global timers.
+        // Level systems are currently static at runtime.
     }
 
     /**

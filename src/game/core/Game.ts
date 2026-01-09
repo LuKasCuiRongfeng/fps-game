@@ -23,6 +23,7 @@ import { Enemy } from "../enemy/Enemy";
 import { EnemyType, EnemyTypesConfig } from "./GameConfig";
 import { Pickup } from "../entities/PickupTSL";
 import { Grenade } from "../entities/GrenadeTSL";
+import { BulletTrail, HitEffect } from "../weapon/WeaponEffects";
 import { ExplosionManager } from "../entities/ExplosionEffect";
 import { GameStateService } from "./GameState";
 import { SoundManager } from "./SoundManager";
@@ -56,12 +57,15 @@ export class Game {
     private enemies: Enemy[] = [];
     private pickups: Pickup[] = [];
     private grenades: Grenade[] = [];
+    private grenadePool: Grenade[] = [];
+    private readonly grenadePoolMax = 24;
 
     // 计时器
     private spawnTimer: number = 0;
     private pickupSpawnTimer: number = 0;
     private initialPickupsSpawned: boolean = false;
     private pendingInitialPickupSpawns: number = 0;
+    private pendingInitialPickupCooldown: number = 0;
 
     // 系统
     private physicsSystem!: PhysicsSystem;
@@ -72,6 +76,7 @@ export class Game {
     private particleSystem!: GPUParticleSystem;
     private explosionManager!: ExplosionManager;
     private weatherSystem!: WeatherSystem;
+    private soundManager: SoundManager | null = null;
 
     // 光照引用 (用于天气系统)
     private ambientLight!: THREE.AmbientLight;
@@ -86,6 +91,11 @@ export class Game {
     private frameCount: number = 0;
     private lastFpsUpdate: number = 0;
     private currentFps: number = 60;
+
+    // Shadow update throttling: keep visuals, avoid per-frame shadow-map renders.
+    private shadowUpdateAccumulator = 0;
+    private lastShadowSnapX = Number.NaN;
+    private lastShadowSnapZ = Number.NaN;
 
     // Enemy bullet trail pooling (avoid per-shot geometry/material allocations)
     private enemyTrailPool: Array<{
@@ -220,7 +230,6 @@ export class Game {
 
         // 光照
         this.setupLighting();
-
         // 相机
         this.camera = new THREE.PerspectiveCamera(
             75,
@@ -232,7 +241,6 @@ export class Game {
         this.scene.add(this.camera);
 
         this.updateProgress(30, "Initializing Physics & Level...");
-
         // Enable BVH-accelerated raycasting (static meshes will build BVH on registration)
         enableBVH();
 
@@ -267,6 +275,10 @@ export class Game {
         this.weatherSystem = new WeatherSystem(this.scene, this.camera);
         this.weatherSystem.setLights(this.ambientLight, this.sunLight);
         this.weatherSystem.setWeather("sunny", true); // 初始晴天
+
+        // IMPORTANT: create SoundManager during init (loading screen), not during the first frames.
+        // Lazy-constructing AudioContext inside the render loop can cause a big hitch.
+        this.soundManager = SoundManager.getInstance();
 
         this.updateProgress(75, "Initializing Player Controller...");
 
@@ -386,6 +398,39 @@ export class Game {
         dummyEnemy.mesh.updateMatrixWorld(true);
         dummyPickupHealth.mesh.updateMatrixWorld(true);
         dummyPickupAmmo.mesh.updateMatrixWorld(true);
+
+        // 4. 虚拟弹道/命中特效：让它们在 warmup 期间被真正绘制一次，避免第一次开枪编译/上传造成掉帧。
+        const dummyTrail = new BulletTrail();
+        dummyTrail.init(
+            new THREE.Vector3(dummyAnchor.x, dummyAnchor.y + 1.2, dummyAnchor.z - 1.2),
+            new THREE.Vector3(dummyAnchor.x, dummyAnchor.y + 1.2, dummyAnchor.z - 6.5),
+        );
+        dummyTrail.mesh.visible = true;
+        this.scene.add(dummyTrail.mesh);
+
+        const dummyHit = new HitEffect();
+        dummyHit.init(
+            new THREE.Vector3(dummyAnchor.x + 0.8, dummyAnchor.y + 1.1, dummyAnchor.z - 5.0),
+            new THREE.Vector3(0, 1, 0),
+            'spark',
+        );
+        this.scene.add(dummyHit.group);
+
+        dummyTrail.mesh.updateMatrixWorld(true);
+        dummyHit.group.updateMatrixWorld(true);
+
+        // 5. 预热射击相关粒子路径：第一次开枪/第一次命中时常见的 buffer upload / pipeline 创建
+        // 这里主动触发一次 emit，配合后续 warmup render 让 WebGPU 把资源准备好。
+        try {
+            const forward = new THREE.Vector3(0, 0, -1);
+            const p = new THREE.Vector3(dummyAnchor.x, dummyAnchor.y + 1.2, dummyAnchor.z - 3.5);
+            this.particleSystem.emitMuzzleFlash(p, forward);
+            this.particleSystem.emitSparks(p, new THREE.Vector3(0, 1, 0), 6);
+            this.particleSystem.emitBlood(p, forward, 6);
+            this.particleSystem.update(0.016);
+        } catch {
+            // ignore
+        }
 
         this.updateProgress(95, "Pre-compiling Shaders (Warmup)...");
 
@@ -521,10 +566,14 @@ export class Game {
                 this.scene.remove(dummyPickupHealth.mesh);
                 this.scene.remove(dummyPickupAmmo.mesh);
                 this.scene.remove(dummyGrenade.mesh);
+                this.scene.remove(dummyTrail.mesh);
+                this.scene.remove(dummyHit.group);
                 dummyEnemy.dispose();
                 dummyPickupHealth.dispose();
                 dummyPickupAmmo.dispose();
                 dummyGrenade.dispose();
+                dummyTrail.dispose();
+                dummyHit.dispose();
             } else {
                 // @ts-ignore - Fallback/Compat
                 await this.renderer.compile(this.scene, this.camera);
@@ -562,6 +611,12 @@ export class Game {
         this.sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
         this.sunLight.position.set(15, 30, 15);
         this.sunLight.castShadow = true;
+
+        // Performance: shadow-map rendering is expensive and can cause view-dependent FPS drops.
+        // We keep shadows enabled, but we don't re-render the shadow map every frame.
+        // Instead, we mark it dirty only when the snapped light position changes (or periodically).
+        this.sunLight.shadow.autoUpdate = false;
+        this.sunLight.shadow.needsUpdate = true;
 
         // 阴影设置
         // 优化：缩小阴影相机范围，只覆盖玩家周围近处的物体
@@ -941,10 +996,25 @@ export class Game {
             const x = Math.floor(playerPos.x / texelSize) * texelSize;
             const z = Math.floor(playerPos.z / texelSize) * texelSize;
 
-            // 保持相对偏移 (15, 30, 15)
-            this.sunLight.position.set(x + 15, 30, z + 15);
-            this.sunLight.target.position.set(x, 0, z);
-            this.sunLight.target.updateMatrixWorld();
+            // Throttle shadow-map updates: refresh when snapped center changes, or at a low fixed rate.
+            // IMPORTANT: if we move the light but don't refresh the shadow map, the shadow matrix and map
+            // go out of sync and cause visible flicker/shimmer. So only move the light when we also update.
+            this.shadowUpdateAccumulator += delta;
+            const snapChanged = x !== this.lastShadowSnapX || z !== this.lastShadowSnapZ;
+            const shouldUpdateShadow = snapChanged || this.shadowUpdateAccumulator >= 0.1;
+
+            if (shouldUpdateShadow) {
+                this.lastShadowSnapX = x;
+                this.lastShadowSnapZ = z;
+                this.shadowUpdateAccumulator = 0;
+
+                // 保持相对偏移 (15, 30, 15)
+                this.sunLight.position.set(x + 15, 30, z + 15);
+                this.sunLight.target.position.set(x, 0, z);
+                this.sunLight.target.updateMatrixWorld();
+
+                this.sunLight.shadow.needsUpdate = true;
+            }
         }
 
         // 更新瞄准状态 (用于后处理效果)
@@ -971,8 +1041,11 @@ export class Game {
         this.weatherSystem.update(delta);
         const tWeatherMs = this.hitchProfilerEnabled ? (performance.now() - t0) : 0;
 
+        // 更新关卡（植被距离裁剪/LOD等）
+        this.level.update(delta, playerPos);
+
         // --- 背景音乐状态更新 ---
-        const sm = SoundManager.getInstance();
+        const sm = this.soundManager ?? SoundManager.getInstance();
         const currentWeather = this.weatherSystem.getCurrentWeather();
 
         // 1. 检查是否有战斗 (敌人靠近)
@@ -1102,10 +1175,17 @@ export class Game {
             }
         }
 
-        // Spread initial pickup spawning across frames to avoid a single-frame spike.
+        // Spread initial pickup spawning over time to avoid a visible FPS dip when standing still.
         if (this.pendingInitialPickupSpawns > 0) {
-            this.spawnPickup();
-            this.pendingInitialPickupSpawns--;
+            this.pendingInitialPickupCooldown = Math.max(
+                0,
+                this.pendingInitialPickupCooldown - delta
+            );
+            if (this.pendingInitialPickupCooldown <= 0) {
+                this.spawnPickup();
+                this.pendingInitialPickupSpawns--;
+                this.pendingInitialPickupCooldown = 0.3;
+            }
         }
     }
 
@@ -1142,14 +1222,20 @@ export class Game {
      */
     private throwGrenade(position: THREE.Vector3, direction: THREE.Vector3) {
         const throwStrength = WeaponConfig.grenade.throwStrength;
-        const grenade = new Grenade(
-            position,
-            direction,
-            throwStrength,
-            this.scene,
-            this.objects,
-            this.camera.position
-        );
+        let grenade: Grenade;
+        if (this.grenadePool.length > 0) {
+            grenade = this.grenadePool.pop()!;
+            grenade.reset(position, direction, throwStrength);
+        } else {
+            grenade = new Grenade(
+                position,
+                direction,
+                throwStrength,
+                this.scene,
+                this.objects,
+                this.camera.position
+            );
+        }
 
         grenade.setParticleSystem(this.particleSystem);
         grenade.setExplosionManager(this.explosionManager);
@@ -1176,8 +1262,15 @@ export class Game {
             grenade.update(delta);
 
             if (!grenade.isActive) {
-                grenade.dispose();
+                // Return to pool to avoid per-throw allocations/GC/GPU churn.
+                grenade.release();
                 this.grenades.splice(i, 1);
+
+                if (this.grenadePool.length < this.grenadePoolMax) {
+                    this.grenadePool.push(grenade);
+                } else {
+                    grenade.dispose();
+                }
             }
         }
     }
@@ -1449,6 +1542,15 @@ export class Game {
         this.grenades.forEach((g) => {
             g.dispose();
         });
+
+        // 清理手榴弹对象池
+        this.grenadePool.forEach((g) => {
+            g.dispose();
+        });
+        this.grenadePool = [];
+
+        // 清理手榴弹共享资源
+        Grenade.disposeSharedResources();
 
         // 清理敌人弹道轨迹池
         for (const t of this.enemyTrailActive) {

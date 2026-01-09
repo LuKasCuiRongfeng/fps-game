@@ -156,7 +156,11 @@ export class TreeSystem {
 
         // 为每种树准备数据容器 Container for matrices
         const chunkData: Map<TreeType, THREE.Matrix4[]> = new Map();
+        // Cache per-instance world positions for melee/environment interactions.
+        // treePositions: [x,y,z] * instanceCount (world space)
+        const chunkPositions: Map<TreeType, number[]> = new Map();
         this.definitions.forEach(def => chunkData.set(def.type, []));
+        this.definitions.forEach(def => chunkPositions.set(def.type, []));
         
         let validCount = 0;
         
@@ -219,6 +223,8 @@ export class TreeSystem {
             
             // 将矩阵推入对应的列表
             chunkData.get(selectedDef.type)!.push(this.dummy.matrix.clone());
+            const posArr = chunkPositions.get(selectedDef.type)!;
+            posArr.push(wx, y, wz);
             validCount++;
         }
         
@@ -229,9 +235,11 @@ export class TreeSystem {
                 const trunkMesh = new THREE.InstancedMesh(def.trunkGeo, def.trunkMat, matrices.length);
                 const leavesMesh = new THREE.InstancedMesh(def.leavesGeo, def.leavesMat, matrices.length);
 
+                const positions = new Float32Array(chunkPositions.get(def.type)!);
+
                 // 标记为树木（用于近战斧头用途：砍树）
-                trunkMesh.userData = { isTree: true, treeType: def.type, treePart: 'trunk', pairedMesh: leavesMesh };
-                leavesMesh.userData = { isTree: true, treeType: def.type, treePart: 'leaves', pairedMesh: trunkMesh };
+                trunkMesh.userData = { isTree: true, treeType: def.type, treePart: 'trunk', pairedMesh: leavesMesh, treePositions: positions };
+                leavesMesh.userData = { isTree: true, treeType: def.type, treePart: 'leaves', pairedMesh: trunkMesh, treePositions: positions };
                 
                 trunkMesh.castShadow = true;
                 trunkMesh.receiveShadow = true;
@@ -249,7 +257,7 @@ export class TreeSystem {
                 // 重要：计算边界球以确保 Frustum Culling 工作正常
                 trunkMesh.computeBoundingSphere();
                 leavesMesh.computeBoundingSphere();
-                
+
                 this.scene.add(trunkMesh);
                 this.scene.add(leavesMesh);
                 

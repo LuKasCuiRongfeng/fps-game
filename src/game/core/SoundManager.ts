@@ -19,6 +19,10 @@ export class SoundManager {
     private activeBgmSource: AudioBufferSourceNode | null = null;
     private activeBgmGain: GainNode | null = null;
 
+    // Weapon shoot sound: keep nodes alive to avoid per-shot allocations.
+    private shootOsc: OscillatorNode | null = null;
+    private shootGain: GainNode | null = null;
+
     private constructor() {
         this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
         this.masterGain = this.audioContext.createGain();
@@ -58,13 +62,20 @@ export class SoundManager {
             }
         };
 
-        // Don't await here, let them load in background so we don't block game init if used elsewhere
-        // But since this is async void intended, Promise.all is fine to kick them off
-        Promise.all([
-            loadBuffer('sunny.mp3', 'sunny'),
-            loadBuffer('rainy.mp3', 'rainy'),
-            loadBuffer('combat.mp3', 'combat'),
-        ]);
+        // Avoid decoding multiple MP3s concurrently: it can cause a short CPU spike.
+        // Prefer doing this work during idle time, and stagger the tracks.
+        const scheduleIdle = (fn: () => void, timeoutMs: number) => {
+            const ric = (window as any).requestIdleCallback as undefined | ((cb: () => void, opts?: { timeout: number }) => number);
+            if (ric) {
+                ric(fn, { timeout: timeoutMs });
+                return;
+            }
+            window.setTimeout(fn, Math.min(timeoutMs, 2500));
+        };
+
+        scheduleIdle(() => { void loadBuffer('sunny.mp3', 'sunny'); }, 2500);
+        window.setTimeout(() => scheduleIdle(() => { void loadBuffer('rainy.mp3', 'rainy'); }, 2500), 2000);
+        window.setTimeout(() => scheduleIdle(() => { void loadBuffer('combat.mp3', 'combat'); }, 2500), 4500);
     }
 
     public static getInstance(): SoundManager {
@@ -163,6 +174,32 @@ export class SoundManager {
                 this.setBGMState(savedState);
             }
         }
+
+        // Create persistent weapon sound nodes once we have a running context.
+        if ((this.audioContext.state as AudioContextState) === 'running') {
+            this.ensureShootNodes();
+        }
+    }
+
+    private ensureShootNodes() {
+        if (this.shootOsc && this.shootGain) return;
+        try {
+            const osc = this.audioContext.createOscillator();
+            const gain = this.audioContext.createGain();
+            osc.type = 'square';
+            // Keep it silent until fired.
+            gain.gain.setValueAtTime(0, this.audioContext.currentTime);
+            osc.connect(gain);
+            gain.connect(this.masterGain);
+            osc.start();
+
+            this.shootOsc = osc;
+            this.shootGain = gain;
+        } catch (e) {
+            console.warn('Failed to init shoot nodes', e);
+            this.shootOsc = null;
+            this.shootGain = null;
+        }
     }
 
     private playTone(freq: number, type: OscillatorType, duration: number, startTime: number = 0, vol: number = 1) {
@@ -192,23 +229,32 @@ export class SoundManager {
         }
         this.lastShootTime = now;
 
-        this.resume();
-        // Pew pew sound
-        const osc = this.audioContext.createOscillator();
-        const gain = this.audioContext.createGain();
+        void this.resume();
+        this.ensureShootNodes();
 
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(800, this.audioContext.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(100, this.audioContext.currentTime + 0.1);
+        const osc = this.shootOsc;
+        const gain = this.shootGain;
+        if (!osc || !gain) return;
 
-        gain.gain.setValueAtTime(SoundConfig.weapon.shoot.volume, this.audioContext.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, this.audioContext.currentTime + 0.1);
+        const t = this.audioContext.currentTime;
+        try {
+            // Reset envelope
+            gain.gain.cancelScheduledValues(t);
+            gain.gain.setValueAtTime(0.0001, t);
 
-        osc.connect(gain);
-        gain.connect(this.masterGain);
+            // Frequency sweep (pew)
+            osc.frequency.cancelScheduledValues(t);
+            osc.frequency.setValueAtTime(800, t);
+            osc.frequency.exponentialRampToValueAtTime(100, t + 0.1);
 
-        osc.start();
-        osc.stop(this.audioContext.currentTime + 0.1);
+            // Gain envelope
+            gain.gain.setValueAtTime(SoundConfig.weapon.shoot.volume, t);
+            gain.gain.exponentialRampToValueAtTime(0.01, t + 0.1);
+            gain.gain.setValueAtTime(0.0001, t + 0.12);
+        } catch (e) {
+            // If scheduling fails for any reason, fall back silently.
+            console.warn('playShoot scheduling failed', e);
+        }
     }
     
     /**

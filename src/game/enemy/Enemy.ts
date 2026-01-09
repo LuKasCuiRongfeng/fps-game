@@ -138,6 +138,11 @@ export class Enemy {
         this.engageRange = Math.min(baseAttack.engageRange, this.fireRange);
         this.aimSpeed = this.config.ai.aimSpeed;
 
+        // When three-mesh-bvh is enabled, this stops traversal after the first hit.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (this.losRaycaster as any).firstHitOnly = true;
+        this.losRaycaster.near = 0;
+
         // TSL Uniforms
         this.hitStrength = uniform(0);
         this.dissolveAmount = uniform(0);

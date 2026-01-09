@@ -401,8 +401,16 @@ export class PlayerController {
             const damping = Math.exp(-PlayerConfig.movement.friction * delta);
             this.velocity.x *= damping;
             this.velocity.z *= damping;
-            
-            this.velocity.y -= PlayerConfig.movement.gravity * delta; // Gravity
+
+            const wantsMove = this.moveForward || this.moveBackward || this.moveLeft || this.moveRight;
+            // If we are grounded and not trying to move, don't apply gravity every frame.
+            // This avoids doing a vertical collision broadphase just to cancel gravity.
+            const idleGrounded = this.canJump === true && !wantsMove && Math.abs(this.velocity.y) < 0.01;
+            if (!idleGrounded) {
+                this.velocity.y -= PlayerConfig.movement.gravity * delta; // Gravity
+            } else {
+                this.velocity.y = 0;
+            }
 
             this.direction.z = Number(this.moveForward) - Number(this.moveBackward);
             this.direction.x = Number(this.moveRight) - Number(this.moveLeft);
@@ -439,65 +447,79 @@ export class PlayerController {
             const forwardSpeed = -this.velocity.z * delta;
             const rightSpeed = -this.velocity.x * delta;
 
+            // Micro-optimization: when standing still, dx/dz are effectively zero.
+            // Skipping horizontal collision checks avoids 2x broadphase queries per frame at idle.
+            const moveEps = 1e-4;
+
             // X axis movement (World Space)
             const dx = (forward.x * forwardSpeed) + (right.x * rightSpeed);
-            this.camera.position.x += dx;
-            let collisionBox = this.checkCollisions(true); // Use skinWidth for horizontal
-            if (collisionBox) {
-                if (this.debugLogs && this.frameCount % 60 === 0) console.log("[PlayerController] Hit Object X:", collisionBox);
-                // 保存碰撞点的障碍物信息
-                const obstacleTop = collisionBox.max.y;
-                this.camera.position.x -= dx;
-                this.handleObstacle(obstacleTop, dx, 0);
+            let collisionBox: THREE.Box3 | null = null;
+            if (Math.abs(dx) > moveEps) {
+                this.camera.position.x += dx;
+                collisionBox = this.checkCollisions(true); // Use skinWidth for horizontal
+                if (collisionBox) {
+                    if (this.debugLogs && this.frameCount % 60 === 0) console.log("[PlayerController] Hit Object X:", collisionBox);
+                    // 保存碰撞点的障碍物信息
+                    const obstacleTop = collisionBox.max.y;
+                    this.camera.position.x -= dx;
+                    this.handleObstacle(obstacleTop, dx, 0);
+                }
             }
 
             // Z axis movement (World Space)
             const dz = (forward.z * forwardSpeed) + (right.z * rightSpeed);
-            this.camera.position.z += dz;
-            collisionBox = this.checkCollisions(true); // Use skinWidth for horizontal
-            if (collisionBox) {
-                if (this.debugLogs && this.frameCount % 60 === 0) console.log("[PlayerController] Hit Object Z:", collisionBox);
-                // 保存碰撞点的障碍物信息
-                const obstacleTop = collisionBox.max.y;
-                this.camera.position.z -= dz;
-                this.handleObstacle(obstacleTop, 0, dz);
+            if (Math.abs(dz) > moveEps) {
+                this.camera.position.z += dz;
+                collisionBox = this.checkCollisions(true); // Use skinWidth for horizontal
+                if (collisionBox) {
+                    if (this.debugLogs && this.frameCount % 60 === 0) console.log("[PlayerController] Hit Object Z:", collisionBox);
+                    // 保存碰撞点的障碍物信息
+                    const obstacleTop = collisionBox.max.y;
+                    this.camera.position.z -= dz;
+                    this.handleObstacle(obstacleTop, 0, dz);
+                }
             }
 
             // Y axis movement (Gravity / Jump)
+            // If idle + grounded, skip vertical broadphase checks to avoid spikes.
             const previousY = this.camera.position.y;
-            this.camera.position.y += (this.velocity.y * delta);
-            
             // 当前相机高度偏移
             const currentCameraOffset = this.targetCameraHeight;
 
-            const collisionBoxY = this.checkCollisions(false); // Strict check for vertical
-            if (collisionBoxY) {
-                 if (this.velocity.y < 0) {
-                     // Falling down
-                     // Check if we were above the object (landing)
-                     const previousFeetY = previousY - currentCameraOffset;
-                     // Tolerance of 0.1m to handle fast falling or slight penetration
-                     if (previousFeetY >= collisionBoxY.max.y - 0.2) { // 增加容错到0.2
-                         this.canJump = true;
-                         this.velocity.y = 0;
-                         // Snap to top
-                         this.camera.position.y = collisionBoxY.max.y + currentCameraOffset;
-                     } else {
-                         // Hit side or bottom while falling? Revert.
-                         this.camera.position.y = previousY;
-                         this.velocity.y = 0;
-                         // FIXME: 防止卡在空中，如果没有水平速度
-                         if (Math.abs(this.velocity.x) < 0.1 && Math.abs(this.velocity.z) < 0.1) {
-                             // 如果卡在物体内部，尝试向上弹一点
-                             this.camera.position.y += 0.1;
-                         }
-                     }
-                 } 
-                 else if (this.velocity.y > 0) {
-                     // Jumping up and hit ceiling
-                     this.velocity.y = 0;
-                     this.camera.position.y = previousY;
-                 }
+            if (!idleGrounded) {
+                this.camera.position.y += (this.velocity.y * delta);
+
+                const collisionBoxY = this.checkCollisions(false); // Strict check for vertical
+                if (collisionBoxY) {
+                    if (this.velocity.y < 0) {
+                        // Falling down
+                        // Check if we were above the object (landing)
+                        const previousFeetY = previousY - currentCameraOffset;
+                        // Tolerance of 0.1m to handle fast falling or slight penetration
+                        if (previousFeetY >= collisionBoxY.max.y - 0.2) { // 增加容错到0.2
+                            this.canJump = true;
+                            this.velocity.y = 0;
+                            // Snap to top
+                            this.camera.position.y = collisionBoxY.max.y + currentCameraOffset;
+                        } else {
+                            // Hit side or bottom while falling? Revert.
+                            this.camera.position.y = previousY;
+                            this.velocity.y = 0;
+                            // FIXME: 防止卡在空中，如果没有水平速度
+                            if (Math.abs(this.velocity.x) < 0.1 && Math.abs(this.velocity.z) < 0.1) {
+                                // 如果卡在物体内部，尝试向上弹一点
+                                this.camera.position.y += 0.1;
+                            }
+                        }
+                    } else if (this.velocity.y > 0) {
+                        // Jumping up and hit ceiling
+                        this.velocity.y = 0;
+                        this.camera.position.y = previousY;
+                    }
+                }
+            } else {
+                // Keep stable at rest.
+                this.velocity.y = 0;
             }
 
             // Simple ground floor check (fallback)

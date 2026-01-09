@@ -18,6 +18,16 @@ export class Grenade {
     public mesh: THREE.Group;
     public isExploded: boolean = false;
     public isActive: boolean = true;
+
+    // Shared render resources (avoid per-grenade geometry/material allocations)
+    private static sharedBodyGeo: THREE.BufferGeometry | null = null;
+    private static sharedRingGeo: THREE.BufferGeometry | null = null;
+    private static sharedPinGeo: THREE.BufferGeometry | null = null;
+    private static sharedHandleGeo: THREE.BufferGeometry | null = null;
+    private static sharedBodyMaterial: MeshStandardNodeMaterial | null = null;
+    private static sharedRingMaterial: MeshStandardNodeMaterial | null = null;
+    private static sharedPinMaterial: MeshStandardNodeMaterial | null = null;
+    private static sharedHandleMaterial: MeshStandardNodeMaterial | null = null;
     
     // 物理属性
     private velocity: THREE.Vector3;
@@ -80,20 +90,51 @@ export class Grenade {
         
         // 创建手榴弹模型
         this.mesh = this.createGrenadeMesh();
+
+        // Init dynamic state
+        this.velocity = new THREE.Vector3();
+        this.angularVelocity = new THREE.Vector3();
+        this.reset(position, direction, throwStrength);
+    }
+
+    /**
+     * Reset grenade state for pooling reuse.
+     */
+    public reset(position: THREE.Vector3, direction: THREE.Vector3, throwStrength: number) {
+        this.isExploded = false;
+        this.isActive = true;
+        this.currentTime = 0;
+
+        this.mesh.visible = true;
         this.mesh.position.copy(position);
-        
+        this.mesh.rotation.set(0, 0, 0);
+
         // 设置初始速度 (投掷方向 + 向上的抛物线)
-        this.velocity = new THREE.Vector3().copy(direction).normalize().multiplyScalar(throwStrength);
-        this.velocity.y += throwStrength * 0.5;  // 向上的初始速度
-        
+        this.velocity.copy(direction).normalize().multiplyScalar(throwStrength);
+        this.velocity.y += throwStrength * 0.5; // 向上的初始速度
+
         // 随机旋转速度
-        this.angularVelocity = new THREE.Vector3(
+        this.angularVelocity.set(
             (Math.random() - 0.5) * 15,
             (Math.random() - 0.5) * 15,
             (Math.random() - 0.5) * 15
         );
-        
-        scene.add(this.mesh);
+
+        // Ensure present in scene
+        if (!this.mesh.parent) {
+            this.scene.add(this.mesh);
+        }
+    }
+
+    /**
+     * Release this grenade back to a pool (no GPU resource disposal).
+     */
+    public release(): void {
+        this.isActive = false;
+        this.mesh.visible = false;
+        if (this.mesh.parent) {
+            this.scene.remove(this.mesh);
+        }
     }
     
     /**
@@ -130,46 +171,54 @@ export class Grenade {
     private createGrenadeMesh(): THREE.Group {
         const group = new THREE.Group();
         group.userData = { isGrenade: true };
+
+        // Init shared resources once
+        if (!Grenade.sharedBodyGeo) {
+            const bodyGeo = new THREE.SphereGeometry(0.06, 12, 8);
+            bodyGeo.scale(1, 1.4, 1);
+            Grenade.sharedBodyGeo = bodyGeo;
+        }
+        if (!Grenade.sharedRingGeo) Grenade.sharedRingGeo = new THREE.TorusGeometry(0.025, 0.008, 8, 16);
+        if (!Grenade.sharedPinGeo) Grenade.sharedPinGeo = new THREE.CylinderGeometry(0.004, 0.004, 0.04, 6);
+        if (!Grenade.sharedHandleGeo) Grenade.sharedHandleGeo = new THREE.BoxGeometry(0.015, 0.08, 0.025);
+
+        if (!Grenade.sharedBodyMaterial) {
+            Grenade.sharedBodyMaterial = Grenade.createSharedGrenadeMaterial();
+        }
+        if (!Grenade.sharedRingMaterial) {
+            const ringMaterial = new MeshStandardNodeMaterial({ roughness: 0.3, metalness: 0.9 });
+            ringMaterial.colorNode = vec3(0.75, 0.75, 0.78);
+            Grenade.sharedRingMaterial = ringMaterial;
+        }
+        if (!Grenade.sharedPinMaterial) {
+            const pinMaterial = new MeshStandardNodeMaterial({ roughness: 0.25, metalness: 0.85 });
+            pinMaterial.colorNode = vec3(0.8, 0.8, 0.82);
+            Grenade.sharedPinMaterial = pinMaterial;
+        }
+        if (!Grenade.sharedHandleMaterial) {
+            const handleMaterial = new MeshStandardNodeMaterial({ roughness: 0.4, metalness: 0.7 });
+            handleMaterial.colorNode = vec3(0.3, 0.32, 0.28);
+            Grenade.sharedHandleMaterial = handleMaterial;
+        }
         
         // 手榴弹主体 - 椭圆形
-        const bodyGeo = new THREE.SphereGeometry(0.06, 12, 8);
-        bodyGeo.scale(1, 1.4, 1);
-        const bodyMaterial = this.createGrenadeMaterial();
-        const body = new THREE.Mesh(bodyGeo, bodyMaterial);
+        const body = new THREE.Mesh(Grenade.sharedBodyGeo!, Grenade.sharedBodyMaterial!);
         group.add(body);
         
         // 顶部圆环
-        const ringGeo = new THREE.TorusGeometry(0.025, 0.008, 8, 16);
-        const ringMaterial = new MeshStandardNodeMaterial({
-            roughness: 0.3,
-            metalness: 0.9
-        });
-        ringMaterial.colorNode = vec3(0.75, 0.75, 0.78);
-        const ring = new THREE.Mesh(ringGeo, ringMaterial);
+        const ring = new THREE.Mesh(Grenade.sharedRingGeo!, Grenade.sharedRingMaterial!);
         ring.position.y = 0.1;
         ring.rotation.x = Math.PI / 2;
         group.add(ring);
         
         // 保险销
-        const pinGeo = new THREE.CylinderGeometry(0.004, 0.004, 0.04, 6);
-        const pinMaterial = new MeshStandardNodeMaterial({
-            roughness: 0.25,
-            metalness: 0.85
-        });
-        pinMaterial.colorNode = vec3(0.8, 0.8, 0.82);
-        const pin = new THREE.Mesh(pinGeo, pinMaterial);
+        const pin = new THREE.Mesh(Grenade.sharedPinGeo!, Grenade.sharedPinMaterial!);
         pin.position.set(0.03, 0.1, 0);
         pin.rotation.z = Math.PI / 4;
         group.add(pin);
         
         // 手柄/击发装置
-        const handleGeo = new THREE.BoxGeometry(0.015, 0.08, 0.025);
-        const handleMaterial = new MeshStandardNodeMaterial({
-            roughness: 0.4,
-            metalness: 0.7
-        });
-        handleMaterial.colorNode = vec3(0.3, 0.32, 0.28);
-        const handle = new THREE.Mesh(handleGeo, handleMaterial);
+        const handle = new THREE.Mesh(Grenade.sharedHandleGeo!, Grenade.sharedHandleMaterial!);
         handle.position.set(0.045, 0.03, 0);
         group.add(handle);
         
@@ -179,7 +228,7 @@ export class Grenade {
     /**
      * 手榴弹材质 - 军绿色金属质感
      */
-    private createGrenadeMaterial(): MeshStandardNodeMaterial {
+    private static createSharedGrenadeMaterial(): MeshStandardNodeMaterial {
         const material = new MeshStandardNodeMaterial({
             roughness: 0.65,
             metalness: 0.3
@@ -281,13 +330,25 @@ export class Grenade {
         );
         
         for (const obj of this.collisionObjects) {
-            this.tmpObjBox.setFromObject(obj);
-            if (grenadeBox.intersectsBox(this.tmpObjBox)) {
+            // Skip non-colliders / decorative markers
+            const ud: any = (obj as any).userData;
+            if (ud?.isWayPoint) continue;
+
+            // Cache world-space AABB for static environment objects.
+            // Computing Box3 via setFromObject() every frame is very expensive and scales poorly with grenade count.
+            let box: THREE.Box3 | undefined = ud?._grenadeWorldBox;
+            if (!box) {
+                box = new THREE.Box3().setFromObject(obj);
+                if (ud) ud._grenadeWorldBox = box;
+                else (obj as any).userData = { _grenadeWorldBox: box };
+            }
+
+            if (grenadeBox.intersectsBox(box)) {
                 // 简单反弹
                 this.mesh.position.copy(oldPosition);
                 
                 // 计算反弹方向 (简化处理)
-                this.tmpObjBox.getCenter(this.tmpObjCenter);
+                box.getCenter(this.tmpObjCenter);
                 this.tmpBounceDir.copy(oldPosition).sub(this.tmpObjCenter).normalize();
                 
                 const speed = this.velocity.length();
@@ -347,8 +408,8 @@ export class Grenade {
             this.applyPlayerDamage(explosionPosition);
         }, 0);
         
-        // 移除手榴弹模型
-        this.scene.remove(this.mesh);
+        // 立即隐藏，实际移除/回收由外层管理
+        this.mesh.visible = false;
     }
     
     /**
@@ -391,19 +452,31 @@ export class Grenade {
      * 清理资源
      */
     public dispose(): void {
-        this.mesh.traverse((child) => {
-            if (child instanceof THREE.Mesh) {
-                if (child.geometry) child.geometry.dispose();
-                if (child.material) {
-                    if (Array.isArray(child.material)) {
-                        child.material.forEach(m => m.dispose());
-                    } else {
-                        child.material.dispose();
-                    }
-                }
-            }
-        });
+        // Instance-only cleanup (shared geometries/materials are intentionally not disposed here)
         this.scene.remove(this.mesh);
+    }
+
+    /**
+     * Dispose shared render resources (call once on shutdown).
+     */
+    public static disposeSharedResources(): void {
+        Grenade.sharedBodyGeo?.dispose();
+        Grenade.sharedRingGeo?.dispose();
+        Grenade.sharedPinGeo?.dispose();
+        Grenade.sharedHandleGeo?.dispose();
+        Grenade.sharedBodyGeo = null;
+        Grenade.sharedRingGeo = null;
+        Grenade.sharedPinGeo = null;
+        Grenade.sharedHandleGeo = null;
+
+        Grenade.sharedBodyMaterial?.dispose();
+        Grenade.sharedRingMaterial?.dispose();
+        Grenade.sharedPinMaterial?.dispose();
+        Grenade.sharedHandleMaterial?.dispose();
+        Grenade.sharedBodyMaterial = null;
+        Grenade.sharedRingMaterial = null;
+        Grenade.sharedPinMaterial = null;
+        Grenade.sharedHandleMaterial = null;
     }
 }
 

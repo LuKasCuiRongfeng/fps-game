@@ -193,6 +193,7 @@ export class PlayerWeaponSystem {
         } else if (def.category === 'melee') {
             instance = new PlayerMeleeWeapon(this.camera, def);
             (instance as any).setEnemies?.(this.enemies);
+            (instance as any).setPhysicsSystem?.(this.physicsSystem);
             if (this.particleSystem) (instance as any).setParticleSystem?.(this.particleSystem);
         } else {
             instance = new PlayerGrenadeWeapon(this.camera, this.grenadeHand);

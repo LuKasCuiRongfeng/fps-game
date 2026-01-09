@@ -67,6 +67,13 @@ export class GPUParticleSystem {
     private particleMesh!: THREE.InstancedMesh;
     private particleIndex: number = 0;
 
+    // Perf: compute dispatch is expensive even when no particles are alive.
+    // Track an approximate "active window" so we can skip compute work at idle.
+    private hasActiveParticles = false;
+    private activeUntilTime = 0;
+    private didInitialCompute = false;
+    private readonly activeTimeMargin = 0.15; // safety margin to avoid freezing particles near end-of-life
+
     // Reuse vectors in emit() to avoid heavy GC on shooting
     private readonly emitAxisX = new THREE.Vector3(1, 0, 0);
     private readonly emitAxisY = new THREE.Vector3(0, 1, 0);
@@ -460,6 +467,14 @@ export class GPUParticleSystem {
         }
         
         this.particleIndex = (this.particleIndex + config.count) % this.maxParticles;
+
+        // Mark system as active for at least the maximum possible lifetime.
+        // This allows update() to skip compute dispatch when everything should be dead.
+        if (config.count > 0) {
+            this.hasActiveParticles = true;
+            const until = this.globalTime.value + (config.lifetime?.max ?? 0) + this.activeTimeMargin;
+            if (until > this.activeUntilTime) this.activeUntilTime = until;
+        }
         
         // 标记缓冲区需要更新
         this.positionBuffer.needsUpdate = true;
@@ -643,7 +658,21 @@ export class GPUParticleSystem {
     public update(delta: number) {
         this.deltaTime.value = delta;
         this.globalTime.value += delta;
-        
+
+        // Ensure we dispatch at least once early so WebGPU pipelines/resources get compiled during warmup.
+        if (!this.didInitialCompute) {
+            this.didInitialCompute = true;
+            this.renderer.computeAsync(this.updateCompute);
+            return;
+        }
+
+        // Idle fast-path: skip compute work when no particles are expected to be alive.
+        if (!this.hasActiveParticles) return;
+        if (this.globalTime.value > this.activeUntilTime) {
+            this.hasActiveParticles = false;
+            return;
+        }
+
         // 执行 Compute Shader
         this.renderer.computeAsync(this.updateCompute);
         

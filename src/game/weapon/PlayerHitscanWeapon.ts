@@ -24,6 +24,47 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
     private intersects: THREE.Intersection[] = [];
     private physicsCandidates: THREE.Object3D[] = [];
 
+    private appendRaycastTargetsInto(root: THREE.Object3D, out: THREE.Object3D[]) {
+        // Fast path: mesh
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const anyRoot = root as any;
+        if (anyRoot.isMesh) {
+            out.push(root);
+            return;
+        }
+
+        // Cache per object: static world and enemy rigs are stable.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ud = (root.userData ?? {}) as any;
+        const cached = ud._hitscanTargets as THREE.Object3D[] | undefined;
+        if (cached) {
+            for (const t of cached) out.push(t);
+            return;
+        }
+
+        const targets: THREE.Object3D[] = [];
+        root.traverse((obj) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const anyObj = obj as any;
+            if (!anyObj.isMesh) return;
+            const userData = obj.userData;
+            if (userData?.noRaycast) return;
+            if (userData?.isWayPoint) return;
+            if (userData?.isDust) return;
+            if (userData?.isSkybox) return;
+            if (userData?.isWeatherParticle) return;
+            if (userData?.isEffect) return;
+            if (userData?.isBulletTrail) return;
+            if (userData?.isGrenade) return;
+            targets.push(obj);
+        });
+
+        // Persist cache
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (root.userData as any)._hitscanTargets = targets;
+        for (const t of targets) out.push(t);
+    }
+
     private tmpCurrentPos = new THREE.Vector3();
     private tmpRayOrigin = new THREE.Vector3();
     private tmpRayDirection = new THREE.Vector3();
@@ -78,6 +119,11 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
         this.id = def.id;
 
         this.raycaster = new THREE.Raycaster();
+        // When three-mesh-bvh is enabled, this stops traversal after the first hit.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (this.raycaster as any).firstHitOnly = true;
+        this.raycaster.near = 0;
+        this.raycaster.far = def.range;
         this.flashIntensity = uniform(0);
 
         const assets = WeaponFactory.createPlayerWeaponMesh(def.id);
@@ -236,11 +282,13 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
 
         // raycast
         this.raycaster.setFromCamera(this.v2Zero, this.camera);
+        // Clamp far so we don't traverse beyond weapon range.
+        this.raycaster.far = this.def.range;
 
         const raycastObjects = this.raycastObjects;
         raycastObjects.length = 0;
         for (const enemy of this.enemies) {
-            if (!enemy.isDead && enemy.mesh.visible) raycastObjects.push(enemy.mesh);
+            if (!enemy.isDead && enemy.mesh.visible) this.appendRaycastTargetsInto(enemy.mesh, raycastObjects);
         }
 
         if (this.physicsSystem) {
@@ -250,7 +298,7 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
                 this.def.range,
                 this.physicsCandidates,
             );
-            for (const obj of candidates) raycastObjects.push(obj);
+            for (const obj of candidates) this.appendRaycastTargetsInto(obj, raycastObjects);
         } else {
             for (const child of this.scene.children) {
                 if (child.userData?.isGround) continue;
@@ -260,13 +308,14 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
                 if (child.userData?.isEffect) continue;
                 if (child.userData?.isBulletTrail) continue;
                 if (child.userData?.isGrenade) continue;
-                raycastObjects.push(child);
+                this.appendRaycastTargetsInto(child, raycastObjects);
             }
         }
 
         const intersects = this.intersects;
         intersects.length = 0;
-        this.raycaster.intersectObjects(raycastObjects, true, intersects);
+        // Raycast against a flat mesh list; no recursive traversal.
+        this.raycaster.intersectObjects(raycastObjects, false, intersects);
 
         const rayOrigin = this.tmpRayOrigin.copy(this.raycaster.ray.origin);
         const rayDirection = this.tmpRayDirection.copy(this.raycaster.ray.direction).normalize();
@@ -307,9 +356,10 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
         }
 
         // ground raymarch (optional)
-        if (!hitPoint && this.onGetGroundHeight) {
+        if (!hitPoint && this.onGetGroundHeight && rayDirection.y < -0.0001) {
             const maxDist = Math.min(120, this.def.range);
-            const stepSize = 1.0;
+            // Fallback only: keep it cheap.
+            const stepSize = 2.0;
             const currentPos = this.tmpCurrentPos.copy(rayOrigin);
             this.tmpStep.copy(rayDirection).multiplyScalar(stepSize);
             let dist = 0;

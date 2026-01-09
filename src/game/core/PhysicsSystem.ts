@@ -62,6 +62,31 @@ export class PhysicsSystem {
         // (Done once at registration time; safe for static geometry)
         buildBVHForObject(object);
 
+        // Precompute raycast mesh targets for weapons/LOS so the first shot doesn't
+        // traverse complex object hierarchies at runtime.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ud = (object.userData ?? (object.userData = {})) as any;
+        if (!ud._hitscanTargets || !ud._meleeTargets) {
+            const targets: THREE.Object3D[] = [];
+            object.traverse((obj) => {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const anyObj = obj as any;
+                if (!anyObj.isMesh) return;
+                const userData = obj.userData;
+                if (userData?.noRaycast) return;
+                if (userData?.isWayPoint) return;
+                if (userData?.isDust) return;
+                if (userData?.isSkybox) return;
+                if (userData?.isWeatherParticle) return;
+                if (userData?.isEffect) return;
+                if (userData?.isBulletTrail) return;
+                if (userData?.isGrenade) return;
+                targets.push(obj);
+            });
+            ud._hitscanTargets = targets;
+            ud._meleeTargets = targets;
+        }
+
         // 计算精确的世界坐标包围盒
         const box = new THREE.Box3().setFromObject(object);
         
