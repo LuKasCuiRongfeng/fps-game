@@ -548,6 +548,39 @@ export const EnvironmentConfig = {
             scale: 0.005,    
             threshold: 0.45, 
         },
+        // Distribution tuning (controls how "forest patches" form).
+        // These values are intentionally exposed so we don't hardcode density behavior in systems.
+        distribution: {
+            // Chunk-level weight: controls how much of the total tree budget goes to dense chunks.
+            // Higher exponent/amplitude => fewer but much denser forests.
+            macroWeight: {
+                base: 0.04,
+                exponent: 4.4,
+                amplitude: 7.2,
+            },
+            // Remap macro noise (0..1) -> denseFactor (0..1), emphasizing top-end.
+            denseFactor: {
+                start: 0.42,
+                range: 0.34,
+                power: 1.45,
+            },
+            // Keep shoreline a bit less dense.
+            shoreFade: {
+                startDistance: 250,
+                min: 0.24,
+                max: 0.76,
+            },
+            // Micro-noise threshold shift based on denseFactor.
+            // Positive sparseBoost makes sparse areas clearer; negative denseReduce makes dense areas pack tighter.
+            microThresholdShift: {
+                sparseBoost: 0.06,
+                denseReduce: 0.18,
+            },
+            // Global tree budget multiplier (overall forest fullness).
+            globalBudgetMultiplier: 1.5,
+            // Disable leaf shadow casting when a single InstancedMesh batch is extremely dense.
+            leafShadowCutoff: 500,
+        },
         // 树种配置
         types: [
             {
@@ -602,6 +635,28 @@ export const EnvironmentConfig = {
         noise: {
             scale: 0.02,     
             threshold: 0.35  
+        },
+        // Distribution tuning (controls how "thick grass patches" form).
+        distribution: {
+            macroWeight: {
+                base: 0.04,
+                exponent: 4.6,
+                amplitude: 7.8,
+            },
+            denseFactor: {
+                start: 0.42,
+                range: 0.34,
+                power: 1.45,
+            },
+            shoreFade: {
+                startDistance: 250,
+                min: 0.24,
+                max: 0.76,
+            },
+            microThresholdShift: {
+                sparseBoost: 0.07,
+                denseReduce: 0.20,
+            },
         },
         tall: {
             count: 80000,

@@ -120,9 +120,18 @@ export class TreeSystem {
         const halfSize = mapSize / 2;
         // 使用配置中的密度
         const density = EnvironmentConfig.trees.density;
+
+        const distCfg = EnvironmentConfig.trees.distribution;
+        const wCfg = distCfg.macroWeight;
+        const dfCfg = distCfg.denseFactor;
+        const shoreCfg = distCfg.shoreFade;
         
         // 计算每块(Chunk)的目标树木数量
         const treesPerChunk = Math.floor((chunkSize * chunkSize) * density);
+
+        // 性能优化：严格限制生成范围（与 generateChunk 一致）
+        const maxTreeDist = MapConfig.boundaryRadius + 50;
+        const maxTreeDistSq = (maxTreeDist + chunkSize / 2) * (maxTreeDist + chunkSize / 2);
 
         // Macro noise for patchy distribution (0..1)
         const hash2 = (x: number, z: number) => {
@@ -138,25 +147,63 @@ export class TreeSystem {
             n = n * 0.85 + hash2(x * 0.15, z * 0.15) * 0.15;
             return Math.min(1, Math.max(0, n / (1 + 0.7)));
         };
-        
-        console.log(`Generating Trees: Map=${mapSize}, Chunk=${chunkSize}, PerChunk=${treesPerChunk} (Density: ${density})`);
 
+        // Build active chunk list and allocate a fixed total budget across chunks.
+        // This increases dense-area density without inflating overall tree counts.
+        const activeChunks: Array<{ cx: number; cz: number; weight: number; denseFactor: number }> = [];
+        let weightSum = 0;
         for (let x = 0; x < chunksPerRow; x++) {
             for (let z = 0; z < chunksPerRow; z++) {
-                // 当前块中心的世​​界坐标
                 const chunkCX = (x * chunkSize) - halfSize + (chunkSize / 2);
                 const chunkCZ = (z * chunkSize) - halfSize + (chunkSize / 2);
+                if (chunkCX * chunkCX + chunkCZ * chunkCZ > maxTreeDistSq) continue;
 
-                // Patchy chunk-level multiplier: creates groves/clearings.
                 const d = Math.sqrt(chunkCX * chunkCX + chunkCZ * chunkCZ);
-                const shoreFade = Math.min(1, Math.max(0, 1 - (d - 250) / Math.max(1, (MapConfig.boundaryRadius - 250))));
+                const shoreFade = Math.min(1, Math.max(0, 1 - (d - shoreCfg.startDistance) / Math.max(1, (MapConfig.boundaryRadius - shoreCfg.startDistance))));
                 const m = macroNoise(chunkCX, chunkCZ);
-                // Target range ~[0.25..2.4]
-                const multiplier = (0.25 + Math.pow(m, 1.8) * 2.15) * (0.35 + 0.65 * shoreFade);
-                const target = Math.max(0, Math.floor(treesPerChunk * multiplier));
-                
-                this.generateChunk(chunkCX, chunkCZ, chunkSize, target, getHeightAt, excludeAreas);
+                // Strong contrast: concentrate trees into forest patches.
+                const baseW = (wCfg.base + Math.pow(m, wCfg.exponent) * wCfg.amplitude) * (shoreCfg.min + shoreCfg.max * shoreFade);
+                const denseFactor = Math.pow(
+                    Math.min(1, Math.max(0, (m - dfCfg.start) / Math.max(1e-6, dfCfg.range))),
+                    dfCfg.power
+                );
+                activeChunks.push({ cx: chunkCX, cz: chunkCZ, weight: baseW, denseFactor });
+                weightSum += baseW;
             }
+        }
+
+        const activeChunkCount = Math.max(1, activeChunks.length);
+        const totalTreesBudget = Math.max(0, Math.floor(treesPerChunk * activeChunkCount * distCfg.globalBudgetMultiplier));
+
+        console.log(
+            `Generating Trees: Map=${mapSize}, Chunk=${chunkSize}, ActiveChunks=${activeChunkCount}, PerChunkBase=${treesPerChunk} (Density: ${density}), TotalBudget=${totalTreesBudget}`
+        );
+
+        // Allocate integers by largest remainder method.
+        const perChunkTargets: number[] = new Array(activeChunks.length).fill(0);
+        let allocated = 0;
+        const remainders: Array<{ i: number; frac: number }> = [];
+
+        for (let i = 0; i < activeChunks.length; i++) {
+            const exact = totalTreesBudget * (activeChunks[i].weight / Math.max(1e-6, weightSum));
+            const flo = Math.max(0, Math.floor(exact));
+            perChunkTargets[i] = flo;
+            allocated += flo;
+            remainders.push({ i, frac: exact - flo });
+        }
+
+        let remaining = totalTreesBudget - allocated;
+        remainders.sort((a, b) => b.frac - a.frac);
+        for (let k = 0; k < remainders.length && remaining > 0; k++) {
+            perChunkTargets[remainders[k].i]++;
+            remaining--;
+        }
+
+        for (let i = 0; i < activeChunks.length; i++) {
+            const c = activeChunks[i];
+            const target = perChunkTargets[i];
+            if (target <= 0) continue;
+            this.generateChunk(c.cx, c.cz, chunkSize, target, getHeightAt, excludeAreas, c.denseFactor);
         }
     }
     
@@ -166,7 +213,8 @@ export class TreeSystem {
         size: number, 
         totalCount: number, 
         getHeightAt: (x: number, z: number) => number, 
-        excludeAreas: any[]
+        excludeAreas: any[],
+        denseFactor: number = 0
     ) {
         // 性能优化：严格限制生成范围
         // 岛屿半径外是深海，不需要生成树木
@@ -193,6 +241,13 @@ export class TreeSystem {
         const oversample = 4;
         const attemptBudget = Math.max(totalCount, totalCount * oversample);
 
+        // Dense chunks: relax threshold a bit to actually hit the target count.
+        // Sparse chunks: slightly tighten it to keep clearings cleaner.
+        const baseThreshold = EnvironmentConfig.trees.noise.threshold;
+        const tCfg = EnvironmentConfig.trees.distribution.microThresholdShift;
+        const thresholdShift = (1 - denseFactor) * tCfg.sparseBoost - denseFactor * tCfg.denseReduce;
+        const effectiveThreshold = Math.min(0.98, Math.max(0.02, baseThreshold + thresholdShift));
+
         for (let i = 0; i < attemptBudget; i++) {
             // 在 Chunk 范围内随机生成
             const rx = (Math.random() - 0.5) * size;
@@ -205,7 +260,7 @@ export class TreeSystem {
             // 使用噪声剔除部分区域，形成聚集和空地
             const noiseVal = this.getNoise(wx, wz);
             // 加上一点随机抖动(-0.05 ~ 0.05)使边缘不那么生硬
-            if (noiseVal < EnvironmentConfig.trees.noise.threshold + (Math.random() * 0.1 - 0.05)) {
+            if (noiseVal < effectiveThreshold + (Math.random() * 0.1 - 0.05)) {
                 continue;
             }
 
@@ -274,7 +329,9 @@ export class TreeSystem {
                 
                 trunkMesh.castShadow = true;
                 trunkMesh.receiveShadow = true;
-                leavesMesh.castShadow = true;
+                // Shadow cost scales with instance count; in very dense forests we disable leaf casting
+                // to keep performance stable while preserving trunk shadows and overall depth.
+                leavesMesh.castShadow = matrices.length <= EnvironmentConfig.trees.distribution.leafShadowCutoff;
                 leavesMesh.receiveShadow = true;
                 
                 for (let k = 0; k < matrices.length; k++) {

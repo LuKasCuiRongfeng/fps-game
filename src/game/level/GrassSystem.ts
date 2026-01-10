@@ -119,6 +119,10 @@ export class GrassSystem {
         // 预先计算有效 chunks（中心点在岛屿范围内）+ 权重（用于非均匀分布）
         const activeChunks: Array<{ cx: number; cz: number; weight: number }> = [];
         let weightSum = 0;
+
+        const distCfg = EnvironmentConfig.grass.distribution;
+        const wCfg = distCfg.macroWeight;
+        const shoreCfg = distCfg.shoreFade;
         for (let x = 0; x < chunksPerRow; x++) {
             for (let z = 0; z < chunksPerRow; z++) {
                 const chunkCX = (x * chunkSize) - halfSize + chunkSize / 2;
@@ -126,10 +130,11 @@ export class GrassSystem {
                 if (chunkCX * chunkCX + chunkCZ * chunkCZ <= maxGrassDistSq) {
                     const d = Math.sqrt(chunkCX * chunkCX + chunkCZ * chunkCZ);
                     // slightly reduce density near shoreline to create more believable gradients
-                    const shoreFade = Math.min(1, Math.max(0, 1 - (d - 250) / Math.max(1, (MapConfig.boundaryRadius - 250))));
+                    const shoreFade = Math.min(1, Math.max(0, 1 - (d - shoreCfg.startDistance) / Math.max(1, (MapConfig.boundaryRadius - shoreCfg.startDistance))));
                     const m = macroNoise(chunkCX, chunkCZ);
-                    // Weight range ~[0.25..2.2]
-                    const w = (0.25 + Math.pow(m, 1.6) * 1.95) * (0.35 + 0.65 * shoreFade);
+                    // Strong contrast: push most instances into dense patches (forest-floor look).
+                    // This does NOT increase total counts; it reallocates the budget across chunks.
+                    const w = (wCfg.base + Math.pow(m, wCfg.exponent) * wCfg.amplitude) * (shoreCfg.min + shoreCfg.max * shoreFade);
                     activeChunks.push({ cx: chunkCX, cz: chunkCZ, weight: w });
                     weightSum += w;
                 }
@@ -180,7 +185,14 @@ export class GrassSystem {
 
         for (let i = 0; i < activeChunks.length; i++) {
             const c = activeChunks[i];
-            this.generateChunk(c.cx, c.cz, chunkSize, perChunkCountsByChunk[i], getHeightAt, excludeAreas);
+            const m = macroNoise(c.cx, c.cz);
+            // 0..1 with extra emphasis on the top end.
+            const dfCfg = distCfg.denseFactor;
+            const denseFactor = Math.pow(
+                Math.min(1, Math.max(0, (m - dfCfg.start) / Math.max(1e-6, dfCfg.range))),
+                dfCfg.power
+            );
+            this.generateChunk(c.cx, c.cz, chunkSize, perChunkCountsByChunk[i], getHeightAt, excludeAreas, denseFactor);
         }
     }
     
@@ -188,7 +200,8 @@ export class GrassSystem {
         cx: number, cz: number, size: number, 
         perChunkCounts: Map<string, number>,
         getHeightAt: (x: number, z: number) => number,
-        excludeAreas: any[]
+        excludeAreas: any[],
+        denseFactor: number = 0
     ) {
         // 对每种草类型生成一个 Mesh
         this.grassTypes.forEach(type => {
@@ -216,6 +229,11 @@ export class GrassSystem {
             // 预先缓存噪声参数以减少对象访问开销
             const noiseScale = EnvironmentConfig.grass.noise.scale;
             const noiseThreshold = EnvironmentConfig.grass.noise.threshold;
+            // Dense chunks accept more candidates; sparse chunks accept fewer.
+            // Keeps total budget stable (counts are allocated above), but increases visual contrast.
+            const tCfg = EnvironmentConfig.grass.distribution.microThresholdShift;
+            const thresholdShift = (1 - denseFactor) * tCfg.sparseBoost - denseFactor * tCfg.denseReduce;
+            const effectiveThreshold = Math.min(0.98, Math.max(0.02, noiseThreshold + thresholdShift));
             
             for (let i = 0; i < attemptCount; i++) {
                 const rx = (Math.random() - 0.5) * size;
@@ -230,7 +248,7 @@ export class GrassSystem {
                 let n = Math.sin((wx + typeOffset) * noiseScale) * Math.sin((wz + typeOffset) * noiseScale);
                 n += Math.sin(wx * noiseScale * 2.3) * Math.sin(wz * noiseScale * 2.3) * 0.5;
                 // 归一化后剔除
-                if (((n/1.5 + 1) * 0.5) < noiseThreshold + (Math.random() * 0.15 - 0.075)) {
+                if (((n/1.5 + 1) * 0.5) < effectiveThreshold + (Math.random() * 0.15 - 0.075)) {
                     continue;
                 }
                 
