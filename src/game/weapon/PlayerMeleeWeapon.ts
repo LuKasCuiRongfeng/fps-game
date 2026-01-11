@@ -9,6 +9,7 @@ import { PhysicsSystem } from '../core/PhysicsSystem';
 import { HitEffect } from './WeaponEffects';
 import { WeaponContext, IPlayerWeapon, MeleeWeaponDefinition } from './WeaponTypes';
 import { WeaponFactory } from './WeaponFactory';
+import { getUserData } from '../types/GameUserData';
 
 export class PlayerMeleeWeapon implements IPlayerWeapon {
     public readonly id: MeleeWeaponDefinition['id'];
@@ -38,50 +39,48 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
     private cachedScene: THREE.Scene | null = null;
     private cachedSceneChildrenLen = -1;
     private cachedSceneStamp = 0;
-    private cachedTreesAndGrass: THREE.Object3D[] = [];
+    private cachedTreesAndGrass: THREE.InstancedMesh[] = [];
     private cachedEnvStatics: THREE.Object3D[] = [];
     private cachedEnvRaycastMeshes: THREE.Object3D[] = [];
 
     private appendRaycastTargetsInto(root: THREE.Object3D, out: THREE.Object3D[]) {
-        const anyRoot = root as any;
-        if (anyRoot.isMesh) {
+        if (root instanceof THREE.Mesh) {
             out.push(root);
             return;
         }
 
         // Prefer targets precomputed at physics registration time.
-        const ud = (root.userData ?? {}) as any;
-        const cached = (ud._meleeTargets || ud._hitscanTargets) as THREE.Object3D[] | undefined;
+        const ud = getUserData(root);
+        const cached = ud._meleeTargets ?? ud._hitscanTargets;
         if (cached) {
             for (const t of cached) out.push(t);
             return;
         }
 
-        // Fallback: build once (dynamic roots like enemies are small)
+        // Build and cache targets (dynamic roots like enemies are small)
         const targets: THREE.Object3D[] = [];
         root.traverse((obj) => {
-            const anyObj = obj as any;
-            if (!anyObj.isMesh) return;
-            const userData = obj.userData;
-            if (userData?.noRaycast) return;
-            if (userData?.isWayPoint) return;
-            if (userData?.isDust) return;
-            if (userData?.isSkybox) return;
-            if (userData?.isWeatherParticle) return;
-            if (userData?.isEffect) return;
-            if (userData?.isBulletTrail) return;
-            if (userData?.isGrenade) return;
+            if (!(obj instanceof THREE.Mesh)) return;
+            const userData = getUserData(obj);
+            if (userData.noRaycast) return;
+            if (userData.isWayPoint) return;
+            if (userData.isDust) return;
+            if (userData.isSkybox) return;
+            if (userData.isWeatherParticle) return;
+            if (userData.isEffect) return;
+            if (userData.isBulletTrail) return;
+            if (userData.isGrenade) return;
             targets.push(obj);
         });
-        (root.userData as any)._meleeTargets = targets;
+        ud._meleeTargets = targets;
         for (const t of targets) out.push(t);
     }
 
     private findEnemyFromObject(obj: THREE.Object3D | null): Enemy | null {
         let cur: THREE.Object3D | null = obj;
         while (cur) {
-            const ud: any = (cur as any).userData;
-            if (ud?.isEnemy && ud?.entity) return ud.entity as Enemy;
+            const ud = getUserData(cur);
+            if (ud.isEnemy && ud.entity) return ud.entity;
             cur = cur.parent;
         }
         return null;
@@ -269,7 +268,7 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
         this.events = events;
 
         // When three-mesh-bvh is enabled, this stops traversal after the first hit.
-        (this.raycaster as any).firstHitOnly = true;
+        this.raycaster.firstHitOnly = true;
 
         const assets = WeaponFactory.createPlayerMeleeMesh(def.id);
         this.mesh = assets;
@@ -280,8 +279,7 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
 
         // Viewmodel meshes can be culled incorrectly; disable frustum culling.
         this.mesh.traverse((obj) => {
-            const anyObj = obj as any;
-            if (anyObj.isMesh) anyObj.frustumCulled = false;
+            if (obj instanceof THREE.Mesh) obj.frustumCulled = false;
         });
 
         this.camera.add(this.mesh);
@@ -462,18 +460,19 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
             this.cachedEnvStatics.length = 0;
             this.cachedEnvRaycastMeshes.length = 0;
             for (const child of ctx.scene.children) {
-                if ((child as any).isInstancedMesh && (child.userData?.isTree || child.userData?.isGrass)) {
+                const ud = getUserData(child);
+                if (child instanceof THREE.InstancedMesh && (ud.isTree || ud.isGrass)) {
                     this.cachedTreesAndGrass.push(child);
                     continue;
                 }
 
                 // env raycast excludes non-collidable/effects
-                if (child.userData?.isSkybox) continue;
-                if (child.userData?.isWeatherParticle) continue;
-                if (child.userData?.isEffect) continue;
-                if (child.userData?.isBulletTrail) continue;
-                if (child.userData?.isDust) continue;
-                if (child.userData?.isEnemyWeapon) continue;
+                if (ud.isSkybox) continue;
+                if (ud.isWeatherParticle) continue;
+                if (ud.isEffect) continue;
+                if (ud.isBulletTrail) continue;
+                if (ud.isDust) continue;
+                if (ud.isEnemyWeapon) continue;
                 this.cachedEnvStatics.push(child);
             }
 
@@ -500,8 +499,7 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
 
         // Enemy hit
         for (const hit of combatHits) {
-            const obj = hit.object as any;
-            const enemy = this.findEnemyFromObject(obj);
+            const enemy = this.findEnemyFromObject(hit.object);
             if (enemy) {
                 fillHitInfo(hit);
                 enemy.takeDamage(this.def.damage);
@@ -524,19 +522,18 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
 
             const hits = this.instancedHits;
             for (const obj of this.cachedTreesAndGrass) {
-                const anyObj = obj as any;
-                if (!anyObj?.isInstancedMesh) continue;
-                if (!anyObj.userData?.isTree) continue;
+                const ud = getUserData(obj);
+                if (!ud.isTree) continue;
                 // Only consider trunks; leaves are paired and should not be directly "chopped".
-                if (anyObj.userData?.treePart !== 'trunk') continue;
+                if (ud.treePart !== 'trunk') continue;
 
-                const mesh = obj as THREE.InstancedMesh;
+                const mesh = obj;
                 hits.length = 0;
                 this.raycaster.intersectObject(mesh, false, hits);
                 if (hits.length <= 0) continue;
 
                 const h = hits[0];
-                const instanceId = (h as any).instanceId as number | undefined;
+                const instanceId = h.instanceId;
                 if (instanceId === undefined || instanceId < 0) continue;
 
                 if (h.distance < bestHitDist) {
@@ -566,17 +563,15 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
 
             const hits = this.instancedHits;
             for (const obj of this.cachedTreesAndGrass) {
-                const anyObj = obj as any;
-                if (!anyObj?.isInstancedMesh) continue;
-                if (!anyObj.userData?.isGrass) continue;
+                if (!getUserData(obj).isGrass) continue;
 
-                const mesh = obj as THREE.InstancedMesh;
+                const mesh = obj;
                 hits.length = 0;
                 this.raycaster.intersectObject(mesh, false, hits);
                 if (hits.length <= 0) continue;
 
                 const h = hits[0];
-                const instanceId = (h as any).instanceId as number | undefined;
+                const instanceId = h.instanceId;
                 if (instanceId === undefined || instanceId < 0) continue;
 
                 if (h.distance < bestHitDist) {
@@ -680,8 +675,8 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
     private findTreeInstancedMesh(obj: THREE.Object3D): THREE.InstancedMesh | null {
         let current: THREE.Object3D | null = obj;
         while (current) {
-            if ((current as any).isInstancedMesh && current.userData?.isTree) {
-                return current as THREE.InstancedMesh;
+            if (current instanceof THREE.InstancedMesh && getUserData(current).isTree) {
+                return current;
             }
             current = current.parent;
         }
@@ -691,8 +686,8 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
     private findGrassInstancedMesh(obj: THREE.Object3D): THREE.InstancedMesh | null {
         let current: THREE.Object3D | null = obj;
         while (current) {
-            if ((current as any).isInstancedMesh && current.userData?.isGrass) {
-                return current as THREE.InstancedMesh;
+            if (current instanceof THREE.InstancedMesh && getUserData(current).isGrass) {
+                return current;
             }
             current = current.parent;
         }
@@ -715,14 +710,14 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
         treeMesh.computeBoundingSphere();
 
         // Update cached positions so future selection doesn't keep picking a removed instance.
-        const positions = treeMesh.userData?.treePositions as Float32Array | undefined;
+        const positions = getUserData(treeMesh).treePositions;
         if (positions) {
             const pi = instanceId * 3;
             if (pi + 1 < positions.length) positions[pi + 1] = -99999;
         }
 
         // paired leaves mesh
-        const paired = treeMesh.userData?.pairedMesh as THREE.InstancedMesh | undefined;
+        const paired = getUserData(treeMesh).pairedMesh;
         if (paired) {
             paired.setMatrixAt(instanceId, m);
             paired.instanceMatrix.needsUpdate = true;
@@ -745,7 +740,7 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
         grassMesh.computeBoundingSphere();
 
         // Update cached positions so we don't repeatedly select an already-cut blade.
-        const positions = grassMesh.userData?.grassPositions as Float32Array | undefined;
+        const positions = getUserData(grassMesh).grassPositions;
         if (positions) {
             const pi = instanceId * 3;
             if (pi + 1 < positions.length) positions[pi + 1] = -99999;
@@ -810,9 +805,9 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
         const grassMeshes: Array<{ mesh: THREE.InstancedMesh; center: THREE.Vector3; radius: number }> = [];
         if (id === 'scythe') {
             for (const child of ctx.scene.children) {
-                if ((child as any).isInstancedMesh && child.userData?.isGrass) {
-                    const mesh = child as THREE.InstancedMesh;
-                    // Chunk meshes compute boundingSphere in GrassSystem; keep a safe fallback.
+                if (child instanceof THREE.InstancedMesh && getUserData(child).isGrass) {
+                    const mesh = child;
+                    // Ensure boundingSphere exists (chunk meshes compute it in GrassSystem).
                     if (!mesh.boundingSphere) mesh.computeBoundingSphere();
 
                     const sphere = mesh.boundingSphere;
@@ -982,9 +977,15 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
     public dispose(): void {
         this.camera.remove(this.mesh);
         this.mesh.traverse((c) => {
-            const mesh = c as any;
-            if (mesh.geometry) mesh.geometry.dispose?.();
-            if (mesh.material) mesh.material.dispose?.();
+            if (!(c instanceof THREE.Mesh)) return;
+            c.geometry.dispose?.();
+
+            const m = c.material;
+            if (Array.isArray(m)) {
+                for (const mat of m) mat.dispose();
+            } else {
+                m.dispose();
+            }
         });
 
         this.hitEffects.forEach(e => e.dispose());
@@ -1001,7 +1002,7 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
     }
 
     private cutGrassNear(mesh: THREE.InstancedMesh, worldPos: THREE.Vector3, radius: number): boolean {
-        const positions = (mesh.userData?.grassPositions as Float32Array | undefined);
+        const positions = getUserData(mesh).grassPositions;
         if (!positions || positions.length < 3) return false;
 
         const r2 = radius * radius;

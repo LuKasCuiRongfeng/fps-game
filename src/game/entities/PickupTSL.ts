@@ -3,7 +3,7 @@
  * 医疗包和弹药箱 - 漂浮、发光、按F拾取
  */
 import * as THREE from 'three';
-import { MeshStandardNodeMaterial, MeshBasicNodeMaterial } from 'three/webgpu';
+import { MeshStandardNodeMaterial, MeshBasicNodeMaterial, type UniformNode } from 'three/webgpu';
 import { 
     uniform, time, sin, vec3, mix, float, 
     smoothstep, uv, length,
@@ -11,6 +11,7 @@ import {
 } from 'three/tsl';
 import { GameEventBus } from '../core/events/GameEventBus';
 import { PickupConfig } from '../core/GameConfig';
+import { getUserData } from '../types/GameUserData';
 
 export type PickupType = 'health' | 'ammo';
 
@@ -26,7 +27,7 @@ export class Pickup {
     private readonly events: GameEventBus;
 
     // TSL Uniforms
-    private collectProgress: any;
+    private collectProgress: UniformNode<number>;
     private floatOffset: number;
     private glowMesh: THREE.Mesh | null = null;
     private glowRing: THREE.Mesh | null = null;  // 地面光环
@@ -68,8 +69,10 @@ export class Pickup {
         
         this.mesh.position.copy(position);
         this.mesh.position.y += PickupConfig.visual.floatHeight;  // 叠加漂浮高度
-        
-        this.mesh.userData = { isPickup: true, type: type };
+
+        const ud = getUserData(this.mesh);
+        ud.isPickup = true;
+        ud.pickupType = type;
     }
 
     /**
@@ -458,8 +461,9 @@ export class Pickup {
 
         // 收集动画
         const animateCollect = () => {
-            if (this.collectProgress.value < 1) {
-                this.collectProgress.value += 0.12;
+            const progress = this.collectProgress.value as number;
+            if (progress < 1) {
+                this.collectProgress.value = progress + 0.12;
                 
                 this.mesh.scale.multiplyScalar(0.88);
                 this.mesh.position.y += 0.08;

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { MapConfig } from './GameConfig';
+import { getUserData } from '../types/GameUserData';
 
 interface Node {
     x: number;
@@ -47,10 +48,11 @@ export class Pathfinding {
         const tmp = new THREE.Vector3();
 
         for(const obj of objects) {
-            if(obj.userData.isWayPoint) {
+            const ud = getUserData(obj);
+            if(ud.isWayPoint) {
                 const wpPos = obj.getWorldPosition(tmp).clone();
-                if(obj.userData.type === 'stair_bottom') bottoms[obj.userData.id] = wpPos;
-                if(obj.userData.type === 'stair_top') tops[obj.userData.id] = wpPos;
+                if(ud.type === 'stair_bottom' && typeof ud.id === 'number') bottoms[ud.id] = wpPos;
+                if(ud.type === 'stair_top' && typeof ud.id === 'number') tops[ud.id] = wpPos;
             }
         }
         
@@ -95,10 +97,11 @@ export class Pathfinding {
     private bakeObstacles(objects: THREE.Object3D[]) {
         // Simple rasterization of bounding boxes onto the grid
         for (const obj of objects) {
-            if (obj.userData.isGround) continue;
-            if (obj.userData.isWayPoint) continue; // Skip waypoints
+            const ud = getUserData(obj);
+            if (ud.isGround) continue;
+            if (ud.isWayPoint) continue; // Skip waypoints
             
-            const isStair = obj.userData.isStair === true;
+            const isStair = ud.isStair === true;
 
             // Ensure transforms are up to date before computing world-space bounds.
             obj.updateWorldMatrix(true, true);

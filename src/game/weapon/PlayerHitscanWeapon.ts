@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { UniformNode } from 'three/webgpu';
 import { uniform } from 'three/tsl';
 import { Enemy } from '../enemy/Enemy';
 import type { GameServices } from '../core/services/GameServices';
@@ -8,6 +9,7 @@ import { BulletTrail, HitEffect } from './WeaponEffects';
 import { WeaponFactory } from './WeaponFactory';
 import { IPlayerWeapon, RangedWeaponDefinition, WeaponContext } from './WeaponTypes';
 import type { GameEventBus } from '../core/events/GameEventBus';
+import { getUserData } from '../types/GameUserData';
 
 export class PlayerHitscanWeapon implements IPlayerWeapon {
     public readonly id: RangedWeaponDefinition['id'];
@@ -28,15 +30,14 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
 
     private appendRaycastTargetsInto(root: THREE.Object3D, out: THREE.Object3D[]) {
         // Fast path: mesh
-        const anyRoot = root as any;
-        if (anyRoot.isMesh) {
+        if (root instanceof THREE.Mesh) {
             out.push(root);
             return;
         }
 
         // Cache per object: static world and enemy rigs are stable.
-        const ud = (root.userData ?? {}) as any;
-        const cached = ud._hitscanTargets as THREE.Object3D[] | undefined;
+        const ud = getUserData(root);
+        const cached = ud._hitscanTargets;
         if (cached) {
             for (const t of cached) out.push(t);
             return;
@@ -44,30 +45,29 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
 
         const targets: THREE.Object3D[] = [];
         root.traverse((obj) => {
-            const anyObj = obj as any;
-            if (!anyObj.isMesh) return;
-            const userData = obj.userData;
-            if (userData?.noRaycast) return;
-            if (userData?.isWayPoint) return;
-            if (userData?.isDust) return;
-            if (userData?.isSkybox) return;
-            if (userData?.isWeatherParticle) return;
-            if (userData?.isEffect) return;
-            if (userData?.isBulletTrail) return;
-            if (userData?.isGrenade) return;
+            if (!(obj instanceof THREE.Mesh)) return;
+            const userData = getUserData(obj);
+            if (userData.noRaycast) return;
+            if (userData.isWayPoint) return;
+            if (userData.isDust) return;
+            if (userData.isSkybox) return;
+            if (userData.isWeatherParticle) return;
+            if (userData.isEffect) return;
+            if (userData.isBulletTrail) return;
+            if (userData.isGrenade) return;
             targets.push(obj);
         });
 
         // Persist cache
-        (root.userData as any)._hitscanTargets = targets;
+        ud._hitscanTargets = targets;
         for (const t of targets) out.push(t);
     }
 
     private findEnemyFromObject(obj: THREE.Object3D | null): Enemy | null {
         let cur: THREE.Object3D | null = obj;
         while (cur) {
-            const ud: any = (cur as any).userData;
-            if (ud?.isEnemy && ud?.entity) return ud.entity as Enemy;
+            const ud = getUserData(cur);
+            if (ud.isEnemy && ud.entity) return ud.entity;
             cur = cur.parent;
         }
         return null;
@@ -86,7 +86,7 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
     private tmpBloodDir = new THREE.Vector3();
 
     private flashMesh: THREE.Mesh | null = null;
-    private flashIntensity: any;
+    private flashIntensity: UniformNode<number>;
 
     private recoilOffset: THREE.Vector3 = new THREE.Vector3();
     private swayOffset: THREE.Vector3 = new THREE.Vector3();
@@ -130,7 +130,7 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
 
         this.raycaster = new THREE.Raycaster();
         // When three-mesh-bvh is enabled, this stops traversal after the first hit.
-        (this.raycaster as any).firstHitOnly = true;
+        this.raycaster.firstHitOnly = true;
         this.raycaster.near = 0;
         this.raycaster.far = def.range;
         this.flashIntensity = uniform(0);
@@ -310,13 +310,14 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
             for (const obj of candidates) this.appendRaycastTargetsInto(obj, raycastObjects);
         } else {
             for (const child of this.scene.children) {
-                if (child.userData?.isGround) continue;
-                if (child.userData?.isDust) continue;
-                if (child.userData?.isSkybox) continue;
-                if (child.userData?.isWeatherParticle) continue;
-                if (child.userData?.isEffect) continue;
-                if (child.userData?.isBulletTrail) continue;
-                if (child.userData?.isGrenade) continue;
+                const ud = getUserData(child);
+                if (ud.isGround) continue;
+                if (ud.isDust) continue;
+                if (ud.isSkybox) continue;
+                if (ud.isWeatherParticle) continue;
+                if (ud.isEffect) continue;
+                if (ud.isBulletTrail) continue;
+                if (ud.isGrenade) continue;
                 this.appendRaycastTargetsInto(child, raycastObjects);
             }
         }
@@ -336,9 +337,10 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
         for (const intersect of intersects) {
             const obj = intersect.object;
 
-            if (obj.userData?.isGround) continue;
-            if (obj.userData?.isSkybox) continue;
-            if (obj.userData?.isEnemyWeapon) continue;
+            const ud = getUserData(obj);
+            if (ud.isGround) continue;
+            if (ud.isSkybox) continue;
+            if (ud.isEnemyWeapon) continue;
 
             // skip self
             let shouldSkip = false;
@@ -348,7 +350,8 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
                     shouldSkip = true;
                     break;
                 }
-                if (parent.userData?.isBulletTrail || parent.userData?.isGrenade) {
+                const pud = getUserData(parent);
+                if (pud.isBulletTrail || pud.isGrenade) {
                     shouldSkip = true;
                     break;
                 }
@@ -359,7 +362,7 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
             hitPoint = this.tmpHitPoint.copy(intersect.point);
             this.tmpHitNormal.copy(intersect.face?.normal ?? this.tmpUp);
             hitNormal = this.tmpHitNormal;
-            if ((obj as any).matrixWorld) hitNormal.transformDirection((obj as any).matrixWorld);
+            hitNormal.transformDirection(obj.matrixWorld);
             hitObject = obj;
             break;
         }
@@ -367,7 +370,7 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
         // ground raymarch (optional)
         if (!hitPoint && this.onGetGroundHeight && rayDirection.y < -0.0001) {
             const maxDist = Math.min(120, this.def.range);
-            // Fallback only: keep it cheap.
+            // Keep it cheap.
             const stepSize = 2.0;
             const currentPos = this.tmpCurrentPos.copy(rayOrigin);
             this.tmpStep.copy(rayDirection).multiplyScalar(stepSize);

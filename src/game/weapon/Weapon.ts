@@ -3,6 +3,7 @@
  * 包含枪口火焰、弹道轨迹、命中特效等
  */
 import * as THREE from 'three';
+import type { UniformNode } from 'three/webgpu';
 import { 
     uniform
 } from 'three/tsl';
@@ -14,6 +15,7 @@ import { WeaponConfig, EffectConfig, EnemyConfig } from '../core/GameConfig';
 import { PhysicsSystem } from '../core/PhysicsSystem';
 import { BulletTrail, HitEffect } from './WeaponEffects';
 import { WeaponFactory } from './WeaponFactory';
+import { getUserData } from '../types/GameUserData';
 
 export class Weapon {
     private camera: THREE.Camera;
@@ -33,8 +35,8 @@ export class Weapon {
     private findEnemyFromObject(obj: THREE.Object3D | null): Enemy | null {
         let cur: THREE.Object3D | null = obj;
         while (cur) {
-            const ud: any = (cur as any).userData;
-            if (ud?.isEnemy && ud?.entity) return ud.entity as Enemy;
+            const ud = getUserData(cur);
+            if (ud.isEnemy && ud.entity) return ud.entity;
             cur = cur.parent;
         }
         return null;
@@ -50,7 +52,7 @@ export class Weapon {
     
     // 枪口火焰
     private flashMesh: THREE.Mesh;
-    private flashIntensity: any;  // TSL uniform
+    private flashIntensity: UniformNode<number>;  // TSL uniform
     
     // 武器动画状态
     private recoilOffset: THREE.Vector3 = new THREE.Vector3();
@@ -265,13 +267,14 @@ export class Weapon {
             // 降级：如果没有物理系统，遍历场景 (性能较差)
             for (const child of scene.children) {
                 // 排除地形 IsGround
-                if (child.userData.isGround) continue;
+                if (getUserData(child).isGround) continue;
                 // 排除其他不相关的
-                if (child.userData.isDust) continue;
-                if (child.userData.isSkybox) continue;
-                if (child.userData.isWeatherParticle) continue;
+                const ud = getUserData(child);
+                if (ud.isDust) continue;
+                if (ud.isSkybox) continue;
+                if (ud.isWeatherParticle) continue;
                 // 排除枪口火焰等特效
-                if (child.userData.isEffect) continue;
+                if (ud.isEffect) continue;
                 
                 raycastObjects.push(child);
             }
@@ -295,9 +298,10 @@ export class Weapon {
             const obj = intersect.object as THREE.Mesh;
 
             // 双重检查
-            if (obj.userData.isGround) continue;
-            if (obj.userData.isSkybox) continue;
-            if (obj.userData.isEnemyWeapon) continue;
+            const ud = getUserData(obj);
+            if (ud.isGround) continue;
+            if (ud.isSkybox) continue;
+            if (ud.isEnemyWeapon) continue;
             
             // 跳过武器本身
             let shouldSkip = false;
@@ -308,7 +312,8 @@ export class Weapon {
                     break;
                 }
                 // 检查是否是弹道轨迹/手榴弹
-                if (parent.userData.isBulletTrail || parent.userData.isGrenade) {
+                const pud = getUserData(parent);
+                if (pud.isBulletTrail || pud.isGrenade) {
                     shouldSkip = true;
                     break;
                 }
@@ -467,8 +472,10 @@ export class Weapon {
         
         // 淡出
         const fadeOut = () => {
-            this.flashIntensity.value *= 0.7;
-            if (this.flashIntensity.value > 0.01) {
+            const intensity = this.flashIntensity.value as number;
+            const next = intensity * 0.7;
+            this.flashIntensity.value = next;
+            if (next > 0.01) {
                 requestAnimationFrame(fadeOut);
             } else {
                 this.flashIntensity.value = 0;

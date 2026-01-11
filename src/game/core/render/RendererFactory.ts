@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-// @ts-ignore - WebGPU types not fully available
 import { WebGPURenderer } from 'three/webgpu';
 
 export function createWebGPURenderer(container: HTMLElement): WebGPURenderer {

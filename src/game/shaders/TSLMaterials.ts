@@ -10,6 +10,7 @@ import {
     max, min, sub, length,
     normalLocal, checker
 } from 'three/tsl';
+import type { UniformNode } from 'three/webgpu';
 
 // ============= Uniform 管理器 =============
 export class UniformManager {
@@ -170,7 +171,7 @@ export function createObstacleMaterial(): MeshStandardNodeMaterial {
 }
 
 // ============= 敌人材质 =============
-export function createEnemyMaterial(hitStrength: ReturnType<typeof uniform>): MeshStandardNodeMaterial {
+export function createEnemyMaterial(hitStrength: UniformNode<number>): MeshStandardNodeMaterial {
     const material = new MeshStandardNodeMaterial({
         roughness: 0.5,
         metalness: 0.2

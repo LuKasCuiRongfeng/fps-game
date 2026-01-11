@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MeshStandardNodeMaterial } from 'three/webgpu';
+import { MeshStandardNodeMaterial, type UniformNode } from 'three/webgpu';
 import { 
     time, sin, cos, vec3, vec2, mix, float, 
     smoothstep, fract, positionWorld, abs,
@@ -19,7 +19,7 @@ export class WaterSystem {
      * 创建湖泊 - 真实水面效果
      * @param rainIntensity 雨量强度 Uniform
      */
-    public createWater(rainIntensity: any) {
+    public createWater(rainIntensity: UniformNode<number>) {
         // 水面平面
         const geometry = new THREE.PlaneGeometry(MapConfig.size, MapConfig.size, 64, 64);
         geometry.rotateX(-Math.PI / 2);

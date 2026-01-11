@@ -12,7 +12,9 @@ import type { ParticleSimulation } from '../core/gpu/GpuSimulationFacade';
 import { ExplosionManager } from './ExplosionEffect';
 import { GameEventBus } from '../core/events/GameEventBus';
 import { WeaponConfig } from '../core/GameConfig';
+import { getUserData } from '../types/GameUserData';
 import { PhysicsSystem } from '../core/PhysicsSystem';
+import type { Enemy } from '../enemy/Enemy';
 
 export class Grenade {
     public mesh: THREE.Group;
@@ -57,7 +59,7 @@ export class Grenade {
     private collisionObjects: THREE.Object3D[];
     
     // 敌人引用 (用于伤害计算)
-    private enemies: any[] = [];
+    private enemies: Enemy[] = [];
     
     // 玩家位置引用
     private playerPosition: THREE.Vector3;
@@ -172,7 +174,7 @@ export class Grenade {
     /**
      * 设置敌人列表 (用于爆炸伤害)
      */
-    public setEnemies(enemies: any[]) {
+    public setEnemies(enemies: Enemy[]) {
         this.enemies = enemies;
     }
 
@@ -181,7 +183,7 @@ export class Grenade {
      */
     private createGrenadeMesh(): THREE.Group {
         const group = new THREE.Group();
-        group.userData = { isGrenade: true };
+        getUserData(group).isGrenade = true;
 
         // Init shared resources once
         if (!Grenade.sharedBodyGeo) {
@@ -347,14 +349,14 @@ export class Grenade {
 
         // Query slightly larger than grenade radius to catch near misses and avoid tunneling.
         const queryRadius = 2.5;
-        ps.getNearbyObjectsInto(this.mesh.position, queryRadius, this.nearbyColliders as any);
+        ps.getNearbyObjectsInto(this.mesh.position, queryRadius, this.nearbyColliders);
 
         for (const entry of this.nearbyColliders) {
             const obj = entry.object;
-            const ud: any = (obj as any).userData;
-            if (ud?.isWayPoint) continue;
-            if (ud?.isGrenade) continue;
-            if (ud?.noGrenadeCollision) continue;
+            const ud = getUserData(obj);
+            if (ud.isWayPoint) continue;
+            if (ud.isGrenade) continue;
+            if (ud.noGrenadeCollision) continue;
 
             const box = entry.box;
             if (!grenadeBox.intersectsBox(box)) continue;
@@ -439,7 +441,7 @@ export class Grenade {
                 const damage = Math.floor(this.explosionDamage * damageFactor * damageFactor);
                 
                 if (damage > 0) {
-                    enemy.takeDamage(damage, explosionPosition);
+                    enemy.takeDamage(damage);
                 }
             }
         }

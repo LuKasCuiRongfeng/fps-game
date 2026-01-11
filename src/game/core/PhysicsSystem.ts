@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { buildBVHForObject } from './BVH';
+import { getUserData } from '../types/GameUserData';
 
 /**
  * 物理系统 - 使用空间划分 (Spatial Partitioning) 优化碰撞检测
@@ -110,21 +111,21 @@ export class PhysicsSystem {
 
         // Precompute raycast mesh targets for weapons/LOS so the first shot doesn't
         // traverse complex object hierarchies at runtime.
-        const ud = (object.userData ?? (object.userData = {})) as any;
+        object.userData ??= {};
+        const ud = getUserData(object);
         if (!ud._hitscanTargets || !ud._meleeTargets) {
             const targets: THREE.Object3D[] = [];
             object.traverse((obj) => {
-                const anyObj = obj as any;
-                if (!anyObj.isMesh) return;
-                const userData = obj.userData;
-                if (userData?.noRaycast) return;
-                if (userData?.isWayPoint) return;
-                if (userData?.isDust) return;
-                if (userData?.isSkybox) return;
-                if (userData?.isWeatherParticle) return;
-                if (userData?.isEffect) return;
-                if (userData?.isBulletTrail) return;
-                if (userData?.isGrenade) return;
+                if (!(obj instanceof THREE.Mesh)) return;
+                const userData = getUserData(obj);
+                if (userData.noRaycast) return;
+                if (userData.isWayPoint) return;
+                if (userData.isDust) return;
+                if (userData.isSkybox) return;
+                if (userData.isWeatherParticle) return;
+                if (userData.isEffect) return;
+                if (userData.isBulletTrail) return;
+                if (userData.isGrenade) return;
                 targets.push(obj);
             });
             ud._hitscanTargets = targets;

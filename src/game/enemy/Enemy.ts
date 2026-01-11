@@ -3,6 +3,7 @@
  * 结合 GPU Compute 进行高性能更新
  */
 import * as THREE from 'three';
+import type { UniformNode } from 'three/webgpu';
 import { uniform } from 'three/tsl';
 import type { GameServices } from '../core/services/GameServices';
 import { getDefaultGameServices } from '../core/services/GameServices';
@@ -10,13 +11,14 @@ import { Pathfinding } from '../core/Pathfinding';
 import { EnemyConfig, EnemyType, EnemyTypesConfig } from '../core/GameConfig';
 import { PhysicsSystem } from '../core/PhysicsSystem';
 import { EnemyFactory } from './EnemyFactory';
+import { getUserData } from '../types/GameUserData';
 import type { WeaponId } from '../weapon/WeaponTypes';
 import { GameEventBus } from '../core/events/GameEventBus';
 
 export class Enemy {
     public mesh: THREE.Group;
     public type: EnemyType;
-    private config: any; // 当前类型的配置
+    private config: (typeof EnemyTypesConfig)[EnemyType]; // 当前类型的配置
 
     private speed: number;
     private health: number;
@@ -26,9 +28,9 @@ export class Enemy {
     private readonly services: GameServices;
     private readonly events: GameEventBus;
     
-    // TSL Uniforms (使用 any 类型绕过 WebGPU 类型问题)
-    private hitStrength: any;
-    private dissolveAmount: any;
+    // TSL Uniforms
+    private hitStrength: UniformNode<number>;
+    private dissolveAmount: UniformNode<number>;
     
     // Pathfinding
     private currentPath: THREE.Vector3[] = [];
@@ -40,7 +42,7 @@ export class Enemy {
     private stuckCheckTimer: number = 0;
     private lastStuckCheckPos = new THREE.Vector3();
 
-    // Stair forcing (fallback when player is on a stair platform)
+    // Stair forcing (when player is on a stair platform)
     private forcedStairTimer: number = 0;
     private forcedStairBottom = new THREE.Vector3();
     private forcedStairTop = new THREE.Vector3();
@@ -102,7 +104,7 @@ export class Enemy {
 
         private nearbyCollisionEntries: Array<{ box: THREE.Box3; object: THREE.Object3D }> = [];
 
-        private lastCollisionUserData: any | null = null;
+        private lastCollisionUserData: { isStair?: boolean; isGround?: boolean } | null = null;
 
         private tmpToPlayer = new THREE.Vector3();
         private tmpMoveDir = new THREE.Vector3();
@@ -182,7 +184,7 @@ export class Enemy {
         this.aimSpeed = this.config.ai.aimSpeed;
 
         // When three-mesh-bvh is enabled, this stops traversal after the first hit.
-        (this.losRaycaster as any).firstHitOnly = true;
+        this.losRaycaster.firstHitOnly = true;
         this.losRaycaster.near = 0;
 
         // TSL Uniforms
@@ -209,11 +211,11 @@ export class Enemy {
         this.originalY = 0;
         
         // 设置实体引用
-        this.mesh.userData = { isEnemy: true, entity: this };
+        getUserData(this.mesh).isEnemy = true;
+        getUserData(this.mesh).entity = this;
         this.mesh.traverse((child) => {
-            if (child.userData && child.userData.isEnemy) {
-                child.userData.entity = this;
-            }
+            const ud = getUserData(child);
+            if (ud.isEnemy) ud.entity = this;
         });
 
         // 应用缩放
@@ -247,7 +249,8 @@ export class Enemy {
         
         if (this.isDead) {
             // 死亡溶解动画
-            this.dissolveAmount.value = Math.min(1, this.dissolveAmount.value + delta * 2);
+            const dissolve = this.dissolveAmount.value as number;
+            this.dissolveAmount.value = Math.min(1, dissolve + delta * 2);
             return result;
         }
         
@@ -696,12 +699,8 @@ export class Enemy {
 
     private setCastShadowRecursive(root: THREE.Object3D, castShadow: boolean) {
         root.traverse((obj) => {
-            const mesh = obj as THREE.Mesh;
-            // @ts-ignore
-            if (mesh && typeof mesh.castShadow === 'boolean') {
-                // @ts-ignore
-                mesh.castShadow = castShadow;
-            }
+            const shadowObj = obj as THREE.Object3D & { castShadow?: boolean };
+            if (typeof shadowObj.castShadow === 'boolean') shadowObj.castShadow = castShadow;
         });
     }
 
@@ -994,8 +993,9 @@ export class Enemy {
 
         // 降级：遍历所有障碍物
         for (const object of obstacles) {
-            if (object.userData.isGround) continue;
-            if (object.userData.isWayPoint) continue;
+            const ud = getUserData(object);
+            if (ud.isGround) continue;
+            if (ud.isWayPoint) continue;
             
             const objectBox = new THREE.Box3().setFromObject(object);
             
@@ -1059,14 +1059,14 @@ export class Enemy {
                 // entry.box 已经是世界坐标 AABB
                 if (enemyBox.intersectsBox(entry.box)) {
                     // 如果是楼梯，检查是否可以跨越
-                    if (entry.object.userData.isStair) {
+                    if (getUserData(entry.object).isStair) {
                         const enemyFeetY = position.y;
                         const stepHeight = entry.box.max.y - enemyFeetY;
                         if (stepHeight > 0 && stepHeight <= maxStepHeight) {
                             continue;
                         }
                     }
-                    this.lastCollisionUserData = entry.object.userData;
+                    this.lastCollisionUserData = getUserData(entry.object);
                     return entry.box;
                 }
             }
@@ -1075,13 +1075,14 @@ export class Enemy {
 
         // 降级：遍历所有障碍物 (性能较差)
         for (const object of obstacles) {
-            if (object.userData.isGround) continue;
-            if (object.userData.isWayPoint) continue;
+            const ud = getUserData(object);
+            if (ud.isGround) continue;
+            if (ud.isWayPoint) continue;
 
             const objectBox = new THREE.Box3().setFromObject(object);
             if (enemyBox.intersectsBox(objectBox)) {
                 // 如果是楼梯，检查是否可以跨越
-                if (object.userData.isStair) {
+                if (ud.isStair) {
                     const enemyFeetY = position.y;
                     const stepHeight = objectBox.max.y - enemyFeetY;
                     
@@ -1090,7 +1091,7 @@ export class Enemy {
                         continue; // 跳过这个碰撞，允许敌人走上去
                     }
                 }
-                this.lastCollisionUserData = object.userData;
+                this.lastCollisionUserData = ud;
                 return objectBox;
             }
         }
@@ -1118,8 +1119,9 @@ export class Enemy {
             if (!this.isDead) {
                 // 渐变恢复
                 const fadeOut = () => {
-                    if (this.hitStrength.value > 0.01) {
-                        this.hitStrength.value *= 0.8;
+                    const strength = this.hitStrength.value as number;
+                    if (strength > 0.01) {
+                        this.hitStrength.value = strength * 0.8;
                         requestAnimationFrame(fadeOut);
                     } else {
                         this.hitStrength.value = 0;

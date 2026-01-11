@@ -436,7 +436,7 @@ export class Game {
             if (!runtime) return;
 
             // Best-effort: clear active enemies so a new run starts clean.
-            (runtime.gameplay.enemySystem as any)?.clearAll?.();
+            runtime.gameplay.enemySystem.clearAll();
 
             // Reset player physics + position.
             const spawnX = 0;
@@ -665,12 +665,7 @@ export class Game {
             // ignore
         }
 
-        // Postprocessing resources (best-effort; API surface differs across three versions)
-        try {
-            (runtime.render.postProcessing as any)?.dispose?.();
-        } catch {
-            // ignore
-        }
+        runtime.render.postProcessing.dispose();
 
         runtime.renderer.dispose();
 

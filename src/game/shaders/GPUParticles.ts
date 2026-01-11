@@ -3,8 +3,7 @@
  * 支持数万粒子的实时模拟
  */
 import * as THREE from 'three';
-// @ts-ignore - WebGPU types not fully available
-import { WebGPURenderer, SpriteNodeMaterial } from 'three/webgpu';
+import { StorageBufferAttribute, WebGPURenderer, SpriteNodeMaterial, type ComputeNode } from 'three/webgpu';
 import {
     Fn, uniform, storage, instanceIndex,
     float, vec2, vec3, vec4,
@@ -14,8 +13,6 @@ import {
     mix,
     uv, length, smoothstep
 } from 'three/tsl';
-
-import { createStorageBufferAttribute } from './StorageBufferAttributeCompat';
 
 // 粒子类型
 export type ParticleType = 'spark' | 'smoke' | 'blood' | 'debris' | 'muzzle' | 'explosion';
@@ -43,13 +40,13 @@ export class GPUParticleSystem {
     private maxParticles: number;
     private scene: THREE.Scene;
     
-    // GPU 缓冲区 (使用 any 类型绕过 WebGPU 类型问题)
-    private positionBuffer!: any;
-    private velocityBuffer!: any;
-    private colorBuffer!: any;
-    private sizeBuffer!: any;
-    private lifeBuffer!: any;      // vec2: currentLife, maxLife
-    private typeBuffer!: any;      // int: particle type
+    // GPU 缓冲区
+    private positionBuffer!: StorageBufferAttribute;
+    private velocityBuffer!: StorageBufferAttribute;
+    private colorBuffer!: StorageBufferAttribute;
+    private sizeBuffer!: StorageBufferAttribute;
+    private lifeBuffer!: StorageBufferAttribute;      // vec2: currentLife, maxLife
+    private typeBuffer!: StorageBufferAttribute;      // int: particle type
     
     // Compute Shader Uniforms
     private deltaTime = uniform(0);
@@ -57,7 +54,7 @@ export class GPUParticleSystem {
     private gravity = uniform(new THREE.Vector3(0, -9.8, 0));
     
     // Compute 函数
-    private updateCompute: any;
+    private updateCompute!: ComputeNode;
     
     // 渲染
     private particleMesh!: THREE.InstancedMesh;
@@ -167,24 +164,20 @@ export class GPUParticleSystem {
     private initBuffers() {
         // 位置 (vec3)
         const positions = new Float32Array(this.maxParticles * 3);
-        // @ts-ignore - WebGPU API
-        this.positionBuffer = createStorageBufferAttribute(positions, 3);
+        this.positionBuffer = new StorageBufferAttribute(positions, 3);
         
         // 速度 (vec3)
         const velocities = new Float32Array(this.maxParticles * 3);
-        // @ts-ignore - WebGPU API
-        this.velocityBuffer = createStorageBufferAttribute(velocities, 3);
+        this.velocityBuffer = new StorageBufferAttribute(velocities, 3);
         
         // 颜色 (vec4: startR, startG, startB, endR) + (vec4: endG, endB, alpha, unused)
         // 简化为 RGBA
         const colors = new Float32Array(this.maxParticles * 4);
-        // @ts-ignore - WebGPU API
-        this.colorBuffer = createStorageBufferAttribute(colors, 4);
+        this.colorBuffer = new StorageBufferAttribute(colors, 4);
         
         // 大小 (vec2: startSize, endSize)
         const sizes = new Float32Array(this.maxParticles * 2);
-        // @ts-ignore - WebGPU API
-        this.sizeBuffer = createStorageBufferAttribute(sizes, 2);
+        this.sizeBuffer = new StorageBufferAttribute(sizes, 2);
         
         // 生命周期 (vec3: currentLife, maxLife, drag)
         const lives = new Float32Array(this.maxParticles * 3);
@@ -194,13 +187,11 @@ export class GPUParticleSystem {
             lives[i * 3 + 1] = 1;   // maxLife
             lives[i * 3 + 2] = 0.98; // drag
         }
-        // @ts-ignore - WebGPU API
-        this.lifeBuffer = createStorageBufferAttribute(lives, 3);
+        this.lifeBuffer = new StorageBufferAttribute(lives, 3);
         
         // 类型 (float: 用于颜色插值等)
         const types = new Float32Array(this.maxParticles);
-        // @ts-ignore - WebGPU API
-        this.typeBuffer = createStorageBufferAttribute(types, 1);
+        this.typeBuffer = new StorageBufferAttribute(types, 1);
     }
 
     /**

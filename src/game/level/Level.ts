@@ -11,6 +11,7 @@ import { TreeSystem } from './TreeSystem';
 import { GrassSystem } from './GrassSystem';
 import { PhysicsSystem } from '../core/PhysicsSystem';
 import { WaterSystem } from './WaterSystem';
+import { getUserData } from '../types/GameUserData';
 import { EnvironmentSystem } from './EnvironmentSystem';
 import { LevelMaterials } from './LevelMaterials';
 
@@ -102,9 +103,9 @@ export class Level {
             for (let i = startIndex; i < this.objects.length; i++) {
                 const obj = this.objects[i];
                 // 排除不需要物理碰撞的物体 (如路径点)
-                if (obj.userData?.isWayPoint) continue;
+                if (getUserData(obj).isWayPoint) continue;
                 // 某些批处理渲染对象会自己注册 per-instance 碰撞体
-                if (obj.userData?.noPhysics) continue;
+                if (getUserData(obj).noPhysics) continue;
                 
                 this.physicsSystem.addStaticObject(obj);
             }
@@ -214,7 +215,7 @@ export class Level {
                 mesh.receiveShadow = true;
                 
                 // 标记为地面
-                mesh.userData = { isGround: true };
+                getUserData(mesh).isGround = true;
                 
                 this.scene.add(mesh);
                 

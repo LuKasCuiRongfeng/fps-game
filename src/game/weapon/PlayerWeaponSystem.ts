@@ -85,32 +85,48 @@ export class PlayerWeaponSystem {
         this.weaponInstances.clear();
     }
 
+    private asHooks(w: IPlayerWeapon): IPlayerWeapon & {
+        setEnemies?(enemies: Enemy[]): void;
+        setParticleSystem?(particleSystem: ParticleSimulation): void;
+        setGroundHeightCallback?(callback: (x: number, z: number) => number): void;
+        setGrenadeThrowCallback?(callback: (position: THREE.Vector3, direction: THREE.Vector3) => void): void;
+        setPhysicsSystem?(system: PhysicsSystem): void;
+    } {
+        return w as IPlayerWeapon & {
+            setEnemies?(enemies: Enemy[]): void;
+            setParticleSystem?(particleSystem: ParticleSimulation): void;
+            setGroundHeightCallback?(callback: (x: number, z: number) => number): void;
+            setGrenadeThrowCallback?(callback: (position: THREE.Vector3, direction: THREE.Vector3) => void): void;
+            setPhysicsSystem?(system: PhysicsSystem): void;
+        };
+    }
+
     public setEnemies(enemies: Enemy[]) {
         this.enemies = enemies;
         for (const w of this.weaponInstances.values()) {
             // best-effort: only ranged uses it
-            (w as any).setEnemies?.(enemies);
+            this.asHooks(w).setEnemies?.(enemies);
         }
     }
 
     public setParticleSystem(particleSystem: ParticleSimulation) {
         this.particleSystem = particleSystem;
         for (const w of this.weaponInstances.values()) {
-            (w as any).setParticleSystem?.(particleSystem);
+            this.asHooks(w).setParticleSystem?.(particleSystem);
         }
     }
 
     public setGroundHeightCallback(callback: (x: number, z: number) => number) {
         this.onGetGroundHeight = callback;
         for (const w of this.weaponInstances.values()) {
-            (w as any).setGroundHeightCallback?.(callback);
+            this.asHooks(w).setGroundHeightCallback?.(callback);
         }
     }
 
     public setGrenadeThrowCallback(callback: (position: THREE.Vector3, direction: THREE.Vector3) => void) {
         this.onGrenadeThrow = callback;
         for (const w of this.weaponInstances.values()) {
-            (w as any).setGrenadeThrowCallback?.(callback);
+            this.asHooks(w).setGrenadeThrowCallback?.(callback);
         }
     }
 
@@ -196,19 +212,22 @@ export class PlayerWeaponSystem {
         let instance: IPlayerWeapon;
 
         if (def.category === 'ranged') {
-            instance = new PlayerHitscanWeapon(this.camera, def, this.services, this.events);
-            (instance as any).setPhysicsSystem?.(this.physicsSystem);
-            (instance as any).setEnemies?.(this.enemies);
-            if (this.particleSystem) (instance as any).setParticleSystem?.(this.particleSystem);
-            if (this.onGetGroundHeight) (instance as any).setGroundHeightCallback?.(this.onGetGroundHeight);
+            const ranged = new PlayerHitscanWeapon(this.camera, def, this.services, this.events);
+            ranged.setPhysicsSystem(this.physicsSystem);
+            ranged.setEnemies(this.enemies);
+            if (this.particleSystem) ranged.setParticleSystem(this.particleSystem);
+            if (this.onGetGroundHeight) ranged.setGroundHeightCallback(this.onGetGroundHeight);
+            instance = ranged;
         } else if (def.category === 'melee') {
-            instance = new PlayerMeleeWeapon(this.camera, def, this.services, this.events);
-            (instance as any).setEnemies?.(this.enemies);
-            (instance as any).setPhysicsSystem?.(this.physicsSystem);
-            if (this.particleSystem) (instance as any).setParticleSystem?.(this.particleSystem);
+            const melee = new PlayerMeleeWeapon(this.camera, def, this.services, this.events);
+            melee.setEnemies(this.enemies);
+            melee.setPhysicsSystem(this.physicsSystem);
+            if (this.particleSystem) melee.setParticleSystem(this.particleSystem);
+            instance = melee;
         } else {
-            instance = new PlayerGrenadeWeapon(this.camera, this.grenadeHand, this.services, this.events);
-            if (this.onGrenadeThrow) (instance as any).setGrenadeThrowCallback?.(this.onGrenadeThrow);
+            const grenade = new PlayerGrenadeWeapon(this.camera, this.grenadeHand, this.services, this.events);
+            if (this.onGrenadeThrow) grenade.setGrenadeThrowCallback(this.onGrenadeThrow);
+            instance = grenade;
         }
 
         this.weaponInstances.set(id, instance);

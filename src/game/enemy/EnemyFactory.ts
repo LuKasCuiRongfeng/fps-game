@@ -1,6 +1,8 @@
 import * as THREE from 'three';
+import type { UniformNode } from 'three/webgpu';
 import { EnemyMaterials } from './EnemyMaterials';
 import { EnemyType, EnemyTypesConfig } from '../core/GameConfig';
+import { getUserData } from '../types/GameUserData';
 
 export class EnemyFactory {
     
@@ -63,7 +65,7 @@ export class EnemyFactory {
     /**
      * 创建人形敌人模型
      */
-    static createHumanoidEnemy(type: EnemyType, hitStrength: any, weaponId?: string): {
+    static createHumanoidEnemy(type: EnemyType, hitStrength: UniformNode<number>, weaponId?: string): {
         group: THREE.Group,
         body: THREE.Mesh,
         head: THREE.Mesh,
@@ -240,7 +242,7 @@ export class EnemyFactory {
         // 设置所有子对象的 userData
         group.traverse((child) => {
             if (child instanceof THREE.Mesh) {
-                child.userData = { isEnemy: true }; // entity 引用需要在外部设置
+                getUserData(child).isEnemy = true; // entity 引用需要在外部设置
                 child.receiveShadow = true;
             }
         });

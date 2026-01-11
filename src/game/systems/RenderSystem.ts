@@ -1,5 +1,4 @@
 import type { FrameContext, System } from '../core/engine/System';
-// @ts-ignore - WebGPU types not fully available
 import type { PostProcessing } from 'three/webgpu';
 
 export class RenderSystem implements System {

@@ -1,8 +1,7 @@
 import type * as THREE from 'three';
-// @ts-ignore - WebGPU types not fully available
 import { PostProcessing } from 'three/webgpu';
-// @ts-ignore - WebGPU types not fully available
 import type { WebGPURenderer } from 'three/webgpu';
+import type { Node, UniformNode } from 'three/webgpu';
 import {
     pass,
     uniform,
@@ -18,7 +17,7 @@ import {
 
 import type { UniformManager } from '../../shaders/TSLMaterials';
 
-export type NumberUniform = { value: number };
+export type NumberUniform = UniformNode<number>;
 
 export type PostFXPipeline = {
     postProcessing: PostProcessing;
@@ -45,11 +44,11 @@ export function createPostFXPipeline(opts: {
 
     pp.outputNode = vignette;
 
-    return { postProcessing: pp, scopeAimProgress: scopeAimProgressNode as unknown as NumberUniform };
+    return { postProcessing: pp, scopeAimProgress: scopeAimProgressNode };
 }
 
-function createDamageOverlay(inputColor: unknown, uniforms: UniformManager) {
-    const color = inputColor as any;
+function createDamageOverlay(inputColor: Node, uniforms: UniformManager): Node {
+    const color = inputColor;
     const coord = screenUV;
     const damageAmount = uniforms.damageFlash;
 
@@ -69,8 +68,8 @@ function createDamageOverlay(inputColor: unknown, uniforms: UniformManager) {
     return finalColor;
 }
 
-function createVignetteEffect(inputColor: unknown) {
-    const color = inputColor as any;
+function createVignetteEffect(inputColor: Node): Node {
+    const color = inputColor;
     const coord = screenUV;
 
     const center = vec3(0.5, 0.5, 0);
@@ -88,9 +87,9 @@ function createVignetteEffect(inputColor: unknown) {
     return finalColor;
 }
 
-function createScopeEffect(inputColor: unknown, scopeAimProgress: unknown) {
-    const color = inputColor as any;
-    const aimProgress = scopeAimProgress as any;
+function createScopeEffect(inputColor: Node, scopeAimProgress: NumberUniform): Node {
+    const color = inputColor;
+    const aimProgress = scopeAimProgress;
     const coord = screenUV;
 
     const aspect = float(16.0 / 9.0);

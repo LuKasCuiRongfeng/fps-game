@@ -1,9 +1,10 @@
 import * as THREE from 'three';
-import { MeshBasicNodeMaterial, SpriteNodeMaterial } from 'three/webgpu';
+import { MeshBasicNodeMaterial, SpriteNodeMaterial, type UniformNode } from 'three/webgpu';
 import { 
     uniform, time, sin, vec2, vec3, vec4, float, 
     smoothstep, uv, abs, length
 } from 'three/tsl';
+import { getUserData } from '../types/GameUserData';
 
 /**
  * 弹道轨迹类 - 使用 TSL 增强的子弹轨迹
@@ -18,7 +19,7 @@ export class BulletTrail {
     public isDead: boolean = false;
     private lifetime: number = 0;
     private maxLifetime: number = 0.15;
-    private trailOpacity: ReturnType<typeof uniform>;
+    private trailOpacity: UniformNode<number>;
     private trailLength: number = 1;
 
     private mainTrail: THREE.Mesh;
@@ -35,7 +36,7 @@ export class BulletTrail {
         this.trailOpacity = uniform(1.0);
         
         this.mesh = new THREE.Group();
-        this.mesh.userData = { isBulletTrail: true };
+        getUserData(this.mesh).isBulletTrail = true;
         
         // 创建材质 (每个实例独立，因为 uniforms 是绑定的)
         // 创建主轨迹
@@ -181,7 +182,7 @@ export class HitEffect {
     public isDead: boolean = false;
     private lifetime: number = 0;
     private maxLifetime: number = 0.4;
-    private particles: THREE.Mesh[] = [];
+    private particles: THREE.Sprite[] = [];
     private particleVelocities: THREE.Vector3[] = []; // 用于 CPU 端物理更新 (简单起见)
     private particleMaterials: SpriteNodeMaterial[] = [];
     
@@ -195,7 +196,7 @@ export class HitEffect {
 
     constructor() {
         this.group = new THREE.Group();
-        this.group.userData = { isEffect: true };
+        getUserData(this.group).isEffect = true;
         
         // 确保静态材质已创建
         if (!HitEffect.sparkMaterial) {
@@ -213,7 +214,7 @@ export class HitEffect {
             const particle = new THREE.Sprite(mat);
             particle.visible = false;
             
-            this.particles.push(particle as unknown as THREE.Mesh);
+            this.particles.push(particle);
             this.particleVelocities.push(new THREE.Vector3());
             this.particleMaterials.push(mat);
             
@@ -274,7 +275,7 @@ export class HitEffect {
         const baseMaterial = type === 'spark' ? HitEffect.sparkMaterial : HitEffect.bloodMaterial;
         
         for (let i = 0; i < particleCount; i++) {
-            const particle = this.particles[i] as unknown as THREE.Sprite;
+            const particle = this.particles[i];
             particle.visible = true;
             
             // 复用该粒子自己的材质实例，只复制 shared material 的节点/渲染配置

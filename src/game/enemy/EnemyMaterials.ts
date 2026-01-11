@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MeshStandardNodeMaterial } from 'three/webgpu';
+import { MeshStandardNodeMaterial, type UniformNode } from 'three/webgpu';
 import { 
     vec3, mix, float, sin, time
 } from 'three/tsl';
@@ -47,7 +47,7 @@ export class EnemyMaterials {
         return flashMaterial;
     }
 
-    static createBodyMaterial(color: string | number | THREE.Color, hitStrength: any): MeshStandardNodeMaterial {
+    static createBodyMaterial(color: string | number | THREE.Color, hitStrength: UniformNode<number>): MeshStandardNodeMaterial {
         const material = new MeshStandardNodeMaterial({
             roughness: 0.7,
             metalness: 0.1
@@ -72,7 +72,7 @@ export class EnemyMaterials {
         return material;
     }
 
-    static createHeadMaterial(hitStrength: any): MeshStandardNodeMaterial {
+    static createHeadMaterial(hitStrength: UniformNode<number>): MeshStandardNodeMaterial {
         const material = new MeshStandardNodeMaterial({
             roughness: 0.6,
             metalness: 0.2
@@ -121,7 +121,7 @@ export class EnemyMaterials {
         return material;
     }
 
-    static createArmorMaterial(color: string | number | THREE.Color, hitStrength: any): MeshStandardNodeMaterial {
+    static createArmorMaterial(color: string | number | THREE.Color, hitStrength: UniformNode<number>): MeshStandardNodeMaterial {
         const material = new MeshStandardNodeMaterial({
             roughness: 0.4, // 稍微降低光滑度，让颜色更明显
             metalness: 0.6  // 降低金属感，避免颜色被环境反射冲淡

@@ -43,7 +43,7 @@ export class SoundManager implements SoundManagerApi {
     private shootGain: GainNode | null = null;
 
     private constructor() {
-        this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        this.audioContext = new window.AudioContext();
         this.masterGain = this.audioContext.createGain();
         this.masterGain.gain.value = SoundConfig.masterVolume;
         this.masterGain.connect(this.audioContext.destination);
@@ -84,12 +84,7 @@ export class SoundManager implements SoundManagerApi {
         // Avoid decoding multiple MP3s concurrently: it can cause a short CPU spike.
         // Prefer doing this work during idle time, and stagger the tracks.
         const scheduleIdle = (fn: () => void, timeoutMs: number) => {
-            const ric = (window as any).requestIdleCallback as undefined | ((cb: () => void, opts?: { timeout: number }) => number);
-            if (ric) {
-                ric(fn, { timeout: timeoutMs });
-                return;
-            }
-            window.setTimeout(fn, Math.min(timeoutMs, 2500));
+            window.requestIdleCallback(() => fn(), { timeout: timeoutMs });
         };
 
         scheduleIdle(() => { void loadBuffer('sunny.mp3', 'sunny'); }, 2500);

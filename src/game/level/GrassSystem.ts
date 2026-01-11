@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { createGrassMaterial } from '../shaders/GrassTSL';
 import { EnvironmentConfig, MapConfig } from '../core/GameConfig';
+import { getUserData } from '../types/GameUserData';
 
 /**
  * 草丛系统 - 管理多种地被植物
@@ -16,12 +17,14 @@ export class GrassSystem {
     private grassTypes: Array<{
         id: string;
         geometry: THREE.BufferGeometry;
-        material: any;
+        material: THREE.Material;
         baseCount: number; // 原始配置的数量 (基于小地图)
         scaleRange: { min: number, max: number };
         colorBase: THREE.Color;
         colorTip: THREE.Color;
     }> = [];
+
+    private static readonly EXCLUDE_AREA_DEFAULT: Array<{ x: number; z: number; radius: number }> = [];
 
     constructor(scene: THREE.Scene) {
         this.scene = scene;
@@ -81,7 +84,7 @@ export class GrassSystem {
     public placeGrass(
         mapSize: number, 
         getHeightAt: (x: number, z: number) => number,
-        excludeAreas: Array<{x: number, z: number, radius: number}> = []
+        excludeAreas: Array<{ x: number; z: number; radius: number }> = GrassSystem.EXCLUDE_AREA_DEFAULT
     ) {
         this.dispose();
 
@@ -200,7 +203,7 @@ export class GrassSystem {
         cx: number, cz: number, size: number, 
         perChunkCounts: Map<string, number>,
         getHeightAt: (x: number, z: number) => number,
-        excludeAreas: any[],
+        excludeAreas: Array<{ x: number; z: number; radius: number }>,
         denseFactor: number = 0
     ) {
         // 对每种草类型生成一个 Mesh
@@ -221,7 +224,11 @@ export class GrassSystem {
             // 标记 + 位置缓存（用于近战/镰刀快速割草，避免昂贵的 InstancedMesh raycast）
             // grassPositions: [x,y,z] * instanceCount (world space)
             const grassPositions = new Float32Array(attemptCount * 3);
-            mesh.userData = { isGrass: true, grassPositions, chunkCenterX: cx, chunkCenterZ: cz };
+            const ud = getUserData(mesh);
+            ud.isGrass = true;
+            ud.grassPositions = grassPositions;
+            ud.chunkCenterX = cx;
+            ud.chunkCenterZ = cz;
             
             let validCount = 0;
             

@@ -1,5 +1,4 @@
 import * as THREE from "three";
-// @ts-ignore - WebGPU types not fully available
 import { PostProcessing, WebGPURenderer } from "three/webgpu";
 
 import { Enemy } from "../../enemy/Enemy";
@@ -20,12 +19,6 @@ import type { WarmupOptions } from "./WarmupConfig";
 export type ProgressCallback = (progress: number, desc: string) => void;
 
 type WebGPUCompileAsync = (scene: THREE.Scene, camera: THREE.Camera) => Promise<unknown>;
-type WebGPUCompile = (scene: THREE.Scene, camera: THREE.Camera) => unknown;
-
-type RendererCompileApi = {
-    compileAsync?: WebGPUCompileAsync;
-    compile?: WebGPUCompile;
-};
 
 export async function runShaderWarmup(params: {
     renderer: WebGPURenderer;
@@ -221,12 +214,11 @@ export async function runShaderWarmup(params: {
     };
 
     try {
-        const rendererApi = renderer as unknown as RendererCompileApi;
-        const compileAsync = rendererApi.compileAsync;
-        const compile = rendererApi.compile;
+        // three/webgpu: we assume WebGPU is always available in this project.
+        const compileAsync: WebGPUCompileAsync = renderer.compileAsync.bind(renderer);
 
         // Force-compile scene materials to avoid first-look hitches.
-        if (compileAsync && resolved.doCompileViews) {
+        if (resolved.doCompileViews) {
             const originalQuaternion = camera.quaternion.clone();
             const originalPosition = camera.position.clone();
 
@@ -317,9 +309,6 @@ export async function runShaderWarmup(params: {
             camera.position.copy(originalPosition);
             camera.quaternion.copy(originalQuaternion);
             camera.updateMatrixWorld();
-        } else {
-            // @ts-ignore - Fallback/Compat
-            if (compile) await compile(scene, camera);
         }
     } catch (e) {
         console.warn("Shader pre-compilation failed:", e);

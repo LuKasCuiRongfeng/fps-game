@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MeshStandardNodeMaterial } from 'three/webgpu';
+import { MeshStandardNodeMaterial, type Node } from 'three/webgpu';
 import { 
     time, sin, vec3, float, 
     mix, positionLocal, uv, 
@@ -33,8 +33,7 @@ export function createGrassMaterial(colorBase: THREE.Color, colorTip: THREE.Colo
     
     // 垂直渐变: 
     const mixFactor = uvCoord.y;
-    // 使用 any 绕过 TSL 类型推断问题 (colorNode 最终接受 Node)
-    let finalColor: any = mix(cBase, cTip, mixFactor);
+    let finalColor: Node = mix(cBase, cTip, mixFactor);
     
     // 添加一点条纹噪声 (程序化草叶纹理)
     const bladeNoise = sin(uvCoord.x.mul(10.0)).mul(0.1);

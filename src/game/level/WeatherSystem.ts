@@ -4,7 +4,6 @@
  */
 import * as THREE from 'three';
 import { WeatherConfig, WeatherType } from '../core/GameConfig';
-// @ts-ignore - WebGPU types not fully available
 import type { WebGPURenderer } from 'three/webgpu';
 import type { FrameContext, System } from '../core/engine/System';
 import { WeatherParticles } from './WeatherParticles';
@@ -17,7 +16,6 @@ export class WeatherSystem implements System {
 
     private scene: THREE.Scene;
     private camera: THREE.Camera;
-    private renderer: WebGPURenderer | null;
     
     // Weather state machine (transition + auto-change)
     private weatherState: WeatherStateMachine;
@@ -32,16 +30,15 @@ export class WeatherSystem implements System {
     // Wind is managed separately (direction/strength + shader uniform sync)
     private readonly wind = new WindController();
     
-    // 粒子系统（雨/沙尘/碎片），内部自适应 GPU compute 与 CPU fallback
+    // 粒子系统（雨/沙尘/碎片）：WebGPU compute only
     private particles: WeatherParticles;
     
     // 天气变化回调
     private onWeatherChange: ((weather: WeatherType) => void) | null = null;
 
-    constructor(scene: THREE.Scene, camera: THREE.Camera, renderer?: WebGPURenderer) {
+    constructor(scene: THREE.Scene, camera: THREE.Camera, renderer: WebGPURenderer) {
         this.scene = scene;
         this.camera = camera;
-        this.renderer = renderer ?? null;
 
         this.particles = new WeatherParticles(scene, camera, renderer);
 

@@ -1,16 +1,21 @@
 import * as THREE from 'three';
 import { createTrunkMaterial, createLeavesMaterial } from '../shaders/TreeTSL';
 import { EnvironmentConfig, MapConfig, TreeType } from '../core/GameConfig';
+import { getUserData } from '../types/GameUserData';
 
 interface TreeDefinition {
     type: TreeType;
     trunkGeo: THREE.BufferGeometry;
     leavesGeo: THREE.BufferGeometry;
-    trunkMat: any;
-    leavesMat: any;
+    trunkMat: ReturnType<typeof createTrunkMaterial>;
+    leavesMat: ReturnType<typeof createLeavesMaterial>;
     probability: number;
     scaleRange: { min: number, max: number };
 }
+
+type TreeGeometryConfig = (typeof EnvironmentConfig.trees.types)[number]['geometry'];
+
+type ExcludeArea = { x: number; z: number; radius: number };
 
 /**
  * 树木系统 - 管理多种树木的生成和渲染
@@ -110,7 +115,7 @@ export class TreeSystem {
     public placeTrees(
         mapSize: number, 
         getHeightAt: (x: number, z: number) => number,
-        excludeAreas: Array<{x: number, z: number, radius: number}> = []
+        excludeAreas: ExcludeArea[] = []
     ) {
         // 清理旧资源
         this.dispose();
@@ -213,7 +218,7 @@ export class TreeSystem {
         size: number, 
         totalCount: number, 
         getHeightAt: (x: number, z: number) => number, 
-        excludeAreas: any[],
+        excludeAreas: ExcludeArea[],
         denseFactor: number = 0
     ) {
         // 性能优化：严格限制生成范围
@@ -324,8 +329,22 @@ export class TreeSystem {
                 const positions = new Float32Array(chunkPositions.get(def.type)!);
 
                 // 标记为树木（用于近战斧头用途：砍树）
-                trunkMesh.userData = { isTree: true, treeType: def.type, treePart: 'trunk', pairedMesh: leavesMesh, treePositions: positions };
-                leavesMesh.userData = { isTree: true, treeType: def.type, treePart: 'leaves', pairedMesh: trunkMesh, treePositions: positions };
+                {
+                    const ud = getUserData(trunkMesh);
+                    ud.isTree = true;
+                    ud.treeType = def.type;
+                    ud.treePart = 'trunk';
+                    ud.pairedMesh = leavesMesh;
+                    ud.treePositions = positions;
+                }
+                {
+                    const ud = getUserData(leavesMesh);
+                    ud.isTree = true;
+                    ud.treeType = def.type;
+                    ud.treePart = 'leaves';
+                    ud.pairedMesh = trunkMesh;
+                    ud.treePositions = positions;
+                }
                 
                 trunkMesh.castShadow = true;
                 trunkMesh.receiveShadow = true;
@@ -388,7 +407,7 @@ export class TreeSystem {
     /**
      * 创建合并的树叶几何体 (多个圆锥体叠加) - 改进版松树
      */
-    private createPineLeavesGeometry(config: any, trunkHeight: number): THREE.BufferGeometry {
+    private createPineLeavesGeometry(config: TreeGeometryConfig, trunkHeight: number): THREE.BufferGeometry {
         const geometries: THREE.BufferGeometry[] = [];
         const layers = config.layers || 5;
         // 确保树叶覆盖住树干顶部
@@ -425,7 +444,7 @@ export class TreeSystem {
     /**
      * 创建橡树叶子 - 改进版：更多随机Cluster
      */
-    private createOakLeavesGeometry(config: any, trunkHeight: number): THREE.BufferGeometry {
+    private createOakLeavesGeometry(config: TreeGeometryConfig, trunkHeight: number): THREE.BufferGeometry {
         const geometries: THREE.BufferGeometry[] = [];
         const clusters = config.clusters || 12;
         const mainSize = config.clusterSize || 0.6;
@@ -471,7 +490,7 @@ export class TreeSystem {
     /**
      * 创建白桦树叶 - 改进版：更稀疏，更垂直分布
      */
-    private createBirchLeavesGeometry(config: any, trunkHeight: number): THREE.BufferGeometry {
+    private createBirchLeavesGeometry(config: TreeGeometryConfig, trunkHeight: number): THREE.BufferGeometry {
         const geometries: THREE.BufferGeometry[] = [];
         // 白桦树叶起始高度
         const baseHeight = trunkHeight * 0.6; 

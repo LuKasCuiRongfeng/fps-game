@@ -102,18 +102,3 @@ export function readEnumFromStorage<T extends string>(key: string, allowed: read
     if (raw === null) return null;
     return (allowed as readonly string[]).includes(raw) ? (raw as T) : null;
 }
-
-export function readBooleanWithCompat(params: {
-    key: string;
-    compatKeys?: string[];
-}): boolean | null {
-    const direct = readBooleanFlag(params.key);
-    if (direct !== null) return direct;
-
-    for (const compat of params.compatKeys ?? []) {
-        const v = readBooleanFlag(compat);
-        if (v !== null) return v;
-    }
-
-    return null;
-}

@@ -1,6 +1,10 @@
 import * as THREE from 'three';
-// @ts-ignore - WebGPU types not fully available
-import type { WebGPURenderer } from 'three/webgpu';
+import {
+    StorageBufferAttribute,
+    type WebGPURenderer,
+    type ComputeNode,
+    type Node,
+} from 'three/webgpu';
 import {
     Fn,
     uniform,
@@ -13,15 +17,13 @@ import {
     If,
 } from 'three/tsl';
 
-import { createStorageBufferAttribute } from './StorageBufferAttributeCompat';
-
 export class GPUWeatherRainParticles {
     private readonly renderer: WebGPURenderer;
     private readonly maxParticles: number;
 
     // Storage buffers
-    private positionBuffer: any;
-    private velocityBuffer: any;
+    private positionBuffer!: StorageBufferAttribute;
+    private velocityBuffer!: StorageBufferAttribute;
 
     // Uniforms
     private deltaTime = uniform(0);
@@ -31,7 +33,7 @@ export class GPUWeatherRainParticles {
     private windStrength = uniform(0);
     private seed = uniform(0);
 
-    private updateCompute: any;
+    private updateCompute!: ComputeNode;
 
     constructor(renderer: WebGPURenderer, maxParticles: number) {
         this.renderer = renderer;
@@ -93,19 +95,17 @@ export class GPUWeatherRainParticles {
 
     private initBuffers(): void {
         const positions = new Float32Array(this.maxParticles * 3);
-        // @ts-ignore
-        this.positionBuffer = createStorageBufferAttribute(positions, 3);
+        this.positionBuffer = new StorageBufferAttribute(positions, 3);
 
         const velocities = new Float32Array(this.maxParticles * 3);
-        // @ts-ignore
-        this.velocityBuffer = createStorageBufferAttribute(velocities, 3);
+        this.velocityBuffer = new StorageBufferAttribute(velocities, 3);
     }
 
     private createCompute(): void {
         const positionStorage = storage(this.positionBuffer, 'vec3', this.maxParticles);
         const velocityStorage = storage(this.velocityBuffer, 'vec3', this.maxParticles);
 
-        const rand01 = (n: any) => fract(sin(n).mul(43758.5453123));
+        const rand01 = (n: Node | number) => fract(sin(n).mul(43758.5453123));
 
         this.updateCompute = Fn(() => {
             const index = instanceIndex;
@@ -120,7 +120,7 @@ export class GPUWeatherRainParticles {
             );
 
             // TSL nodes have multiple concrete subtypes; we reassign `next` in branches.
-            let next: any = pos.add(vel.add(wind).mul(this.deltaTime));
+            let next: Node = pos.add(vel.add(wind).mul(this.deltaTime));
 
             const halfX = this.area.x.mul(0.5);
             const halfZ = this.area.z.mul(0.5);
@@ -164,11 +164,8 @@ export class GPUWeatherRainParticles {
     }
 
     public dispose(): void {
-        // Geometry/material owns the position attribute lifetime; compute buffers are attributes.
-        // @ts-ignore
-        if (typeof this.positionBuffer.dispose === 'function') this.positionBuffer.dispose();
-        // @ts-ignore
-        if (typeof this.velocityBuffer.dispose === 'function') this.velocityBuffer.dispose();
+        this.positionBuffer.dispose();
+        this.velocityBuffer.dispose();
     }
 }
 
@@ -177,8 +174,8 @@ export class GPUWeatherSandParticles {
     private readonly maxParticles: number;
 
     // Storage buffers
-    private positionBuffer: any;
-    private velocityBuffer: any;
+    private positionBuffer!: StorageBufferAttribute;
+    private velocityBuffer!: StorageBufferAttribute;
 
     // Uniforms
     private deltaTime = uniform(0);
@@ -187,7 +184,7 @@ export class GPUWeatherSandParticles {
     private gustOffset = uniform(0);
     private seed = uniform(0);
 
-    private updateCompute: any;
+    private updateCompute!: ComputeNode;
 
     constructor(renderer: WebGPURenderer, maxParticles: number) {
         this.renderer = renderer;
@@ -247,19 +244,17 @@ export class GPUWeatherSandParticles {
 
     private initBuffers(): void {
         const positions = new Float32Array(this.maxParticles * 3);
-        // @ts-ignore
-        this.positionBuffer = createStorageBufferAttribute(positions, 3);
+        this.positionBuffer = new StorageBufferAttribute(positions, 3);
 
         const velocities = new Float32Array(this.maxParticles * 3);
-        // @ts-ignore
-        this.velocityBuffer = createStorageBufferAttribute(velocities, 3);
+        this.velocityBuffer = new StorageBufferAttribute(velocities, 3);
     }
 
     private createCompute(): void {
         const positionStorage = storage(this.positionBuffer, 'vec3', this.maxParticles);
         const velocityStorage = storage(this.velocityBuffer, 'vec3', this.maxParticles);
 
-        const rand01 = (n: any) => fract(sin(n).mul(43758.5453123));
+        const rand01 = (n: Node | number) => fract(sin(n).mul(43758.5453123));
 
         this.updateCompute = Fn(() => {
             const index = instanceIndex;
@@ -273,7 +268,7 @@ export class GPUWeatherSandParticles {
             const gustMultiplier = float(1.0).add(sin(this.gustOffset).mul(0.3));
 
             // TSL nodes have multiple concrete subtypes; we reassign `next` in branches.
-            let next: any = pos.add(vel.mul(gustMultiplier).mul(this.deltaTime));
+            let next: Node = pos.add(vel.mul(gustMultiplier).mul(this.deltaTime));
 
             // Vertical flutter.
             const flutter = sin(this.gustOffset.add(float(index).mul(0.1)))
@@ -302,7 +297,7 @@ export class GPUWeatherSandParticles {
                 );
             });
 
-            // Height limits (world space), matching the CPU fallback.
+            // Height limits (world space).
             If(next.y.lessThan(float(0.0)), () => {
                 const r = rand01(base.add(4.44));
                 next = vec3(next.x, r.mul(this.area.y), next.z);
@@ -316,11 +311,8 @@ export class GPUWeatherSandParticles {
     }
 
     public dispose(): void {
-        // Geometry/material owns the position attribute lifetime; compute buffers are attributes.
-        // @ts-ignore
-        if (typeof this.positionBuffer.dispose === 'function') this.positionBuffer.dispose();
-        // @ts-ignore
-        if (typeof this.velocityBuffer.dispose === 'function') this.velocityBuffer.dispose();
+        this.positionBuffer.dispose();
+        this.velocityBuffer.dispose();
     }
 }
 
@@ -329,9 +321,9 @@ export class GPUWeatherDebrisParticles {
     private readonly maxParticles: number;
 
     // Storage buffers
-    private positionBuffer: any;
-    private velocityBuffer: any;
-    private phaseBuffer: any;
+    private positionBuffer!: StorageBufferAttribute;
+    private velocityBuffer!: StorageBufferAttribute;
+    private phaseBuffer!: StorageBufferAttribute;
 
     // Uniforms
     private deltaTime = uniform(0);
@@ -341,7 +333,7 @@ export class GPUWeatherDebrisParticles {
     private rotationSpeed = uniform(5.0);
     private seed = uniform(0);
 
-    private updateCompute: any;
+    private updateCompute!: ComputeNode;
 
     constructor(renderer: WebGPURenderer, maxParticles: number) {
         this.renderer = renderer;
@@ -409,16 +401,13 @@ export class GPUWeatherDebrisParticles {
 
     private initBuffers(): void {
         const positions = new Float32Array(this.maxParticles * 3);
-        // @ts-ignore
-        this.positionBuffer = createStorageBufferAttribute(positions, 3);
+        this.positionBuffer = new StorageBufferAttribute(positions, 3);
 
         const velocities = new Float32Array(this.maxParticles * 3);
-        // @ts-ignore
-        this.velocityBuffer = createStorageBufferAttribute(velocities, 3);
+        this.velocityBuffer = new StorageBufferAttribute(velocities, 3);
 
         const phases = new Float32Array(this.maxParticles);
-        // @ts-ignore
-        this.phaseBuffer = createStorageBufferAttribute(phases, 1);
+        this.phaseBuffer = new StorageBufferAttribute(phases, 1);
     }
 
     private createCompute(): void {
@@ -426,7 +415,7 @@ export class GPUWeatherDebrisParticles {
         const velocityStorage = storage(this.velocityBuffer, 'vec3', this.maxParticles);
         const phaseStorage = storage(this.phaseBuffer, 'float', this.maxParticles);
 
-        const rand01 = (n: any) => fract(sin(n).mul(43758.5453123));
+        const rand01 = (n: Node | number) => fract(sin(n).mul(43758.5453123));
 
         this.updateCompute = Fn(() => {
             const index = instanceIndex;
@@ -438,10 +427,10 @@ export class GPUWeatherDebrisParticles {
             const gustMultiplier = float(1.0).add(sin(this.gustOffset).mul(this.gustStrength));
 
             // Update position.
-            let nextPos: any = pos.add(vel.mul(gustMultiplier).mul(this.deltaTime));
+            let nextPos: Node = pos.add(vel.mul(gustMultiplier).mul(this.deltaTime));
 
             // Advance phase (used for vertical swirl).
-            let nextPhase: any = phase.add(this.rotationSpeed.mul(this.deltaTime));
+            let nextPhase: Node = phase.add(this.rotationSpeed.mul(this.deltaTime));
             nextPos = vec3(
                 nextPos.x,
                 nextPos.y.add(sin(nextPhase).mul(2.0).mul(this.deltaTime)),
@@ -460,7 +449,7 @@ export class GPUWeatherDebrisParticles {
             });
 
             // Height limits (match CPU path).
-            let nextVel: any = vel;
+            let nextVel: Node = vel;
             If(nextPos.y.lessThan(float(0.0)), () => {
                 nextPos = vec3(nextPos.x, float(0.0), nextPos.z);
                 nextVel = vec3(vel.x, vel.y.abs(), vel.z);
@@ -476,11 +465,8 @@ export class GPUWeatherDebrisParticles {
     }
 
     public dispose(): void {
-        // @ts-ignore
-        if (typeof this.positionBuffer.dispose === 'function') this.positionBuffer.dispose();
-        // @ts-ignore
-        if (typeof this.velocityBuffer.dispose === 'function') this.velocityBuffer.dispose();
-        // @ts-ignore
-        if (typeof this.phaseBuffer.dispose === 'function') this.phaseBuffer.dispose();
+        this.positionBuffer.dispose();
+        this.velocityBuffer.dispose();
+        this.phaseBuffer.dispose();
     }
 }

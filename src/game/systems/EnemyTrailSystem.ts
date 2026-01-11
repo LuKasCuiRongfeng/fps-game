@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { getUserData } from '../types/GameUserData';
 import type { System, FrameContext } from '../core/engine/System';
 
 type TrailInstance = {
@@ -87,7 +88,7 @@ export class EnemyTrailSystem implements System {
 
     private allocateEnemyTrail(): TrailInstance {
         const trailGroup = new THREE.Group();
-        trailGroup.userData = { isBulletTrail: true };
+        getUserData(trailGroup).isBulletTrail = true;
 
         const coreMaterial = new THREE.MeshBasicMaterial({
             color: 0xff6600,

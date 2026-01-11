@@ -9,6 +9,7 @@ import type { GameEventBus } from '../core/events/GameEventBus';
 
 import { PhysicsSystem } from '../core/PhysicsSystem';
 import { Enemy } from '../enemy/Enemy';
+import { getUserData } from '../types/GameUserData';
 
 export class PlayerController {
     private readonly settings: RuntimeSettingsSource;
@@ -400,7 +401,7 @@ export class PlayerController {
                 this.velocity.y = 0;
             }
 
-            // Simple ground floor check (fallback)
+            // Simple ground floor check
             let groundHeight = 0;
             if (this.onGetGroundHeight) {
                 groundHeight = this.onGetGroundHeight(this.camera.position.x, this.camera.position.z);
@@ -515,7 +516,7 @@ export class PlayerController {
                 // 如果是地面物体，忽略水平碰撞 (由 checkCollisions(true) 调用时)
                 // 只有当物体明确标记为 'isGround' 且我们是在做水平碰撞检测时才忽略
                 // 这样可以防止卡在楼梯平台或地砖接缝处
-                if (useSkinWidth && entry.object.userData.isGround) {
+                if (useSkinWidth && getUserData(entry.object).isGround) {
                     continue;
                 }
                 return entry.box;

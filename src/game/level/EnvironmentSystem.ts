@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { MapConfig, EnvironmentConfig, LevelConfig } from '../core/GameConfig';
 import { LevelMaterials } from './LevelMaterials';
+import { getUserData } from '../types/GameUserData';
 import { PhysicsSystem } from '../core/PhysicsSystem';
 
 export class EnvironmentSystem {
@@ -169,7 +170,11 @@ export class EnvironmentSystem {
             const mesh = new THREE.InstancedMesh(geo, mat, matrices.length);
             mesh.castShadow = true;
             mesh.receiveShadow = true;
-            mesh.userData = { isObstacleBatch: true, noPhysics: true };
+            {
+                const ud = getUserData(mesh);
+                ud.isObstacleBatch = true;
+                ud.noPhysics = true;
+            }
 
             for (let i = 0; i < matrices.length; i++) {
                 mesh.setMatrixAt(i, matrices[i]);
@@ -265,7 +270,7 @@ export class EnvironmentSystem {
                 
                 mesh.castShadow = true;
                 mesh.receiveShadow = true;
-                mesh.userData = { isRock: true };
+                getUserData(mesh).isRock = true;
                 
                 this.scene.add(mesh);
                 this.objects.push(mesh);
@@ -304,7 +309,7 @@ export class EnvironmentSystem {
             wallMesh.rotation.y = ruin.rotation;
             wallMesh.castShadow = true;
             wallMesh.receiveShadow = true;
-            wallMesh.userData = { isRuin: true };
+            getUserData(wallMesh).isRuin = true;
             
             this.scene.add(wallMesh);
             this.objects.push(wallMesh);
@@ -382,7 +387,7 @@ export class EnvironmentSystem {
                 if (child instanceof THREE.Mesh) {
                     child.castShadow = true;
                     child.receiveShadow = true;
-                    child.userData = { isCover: true };
+                    getUserData(child).isCover = true;
                 }
             });
             
@@ -428,7 +433,7 @@ export class EnvironmentSystem {
             barrel.rotation.y = index * 0.7;
             barrel.castShadow = true;
             barrel.receiveShadow = true;
-            barrel.userData = { isBarrel: true };
+            getUserData(barrel).isBarrel = true;
             
             this.scene.add(barrel);
             this.objects.push(barrel);
@@ -486,7 +491,7 @@ export class EnvironmentSystem {
                 mesh.position.set(0, meshY, i * stepDepth);
                 mesh.castShadow = true;
                 mesh.receiveShadow = true;
-                mesh.userData = { isStair: true };
+                getUserData(mesh).isStair = true;
                 
                 group.add(mesh);
                 this.objects.push(mesh);
@@ -513,7 +518,11 @@ export class EnvironmentSystem {
             // PlayerController ignores horizontal collisions with objects marked `isGround`.
             // The stair platform is a thick volume; if we mark it as ground, the player can pass through
             // it from the sides/back. Mark as stair/platform so it's walkable on top but blocks sides.
-            platformMesh.userData = { isStair: true, isPlatform: true };
+            {
+                const ud = getUserData(platformMesh);
+                ud.isStair = true;
+                ud.isPlatform = true;
+            }
             
             group.add(platformMesh);
             this.objects.push(platformMesh);
@@ -528,7 +537,12 @@ export class EnvironmentSystem {
             const bottomY = this.getTerrainHeight(bottomX, bottomZ);
             
             stairBottom.position.set(bottomX, bottomY + 0.5, bottomZ);
-            stairBottom.userData = { isWayPoint: true, type: 'stair_bottom', id: configIndex + 1 };
+            {
+                const ud = getUserData(stairBottom);
+                ud.isWayPoint = true;
+                ud.type = 'stair_bottom';
+                ud.id = configIndex + 1;
+            }
             this.objects.push(stairBottom);
 
             const stairTop = new THREE.Object3D();
@@ -540,7 +554,12 @@ export class EnvironmentSystem {
             const topY = groundY + platformHeight;
             
             stairTop.position.set(topX, topY + 0.5, topZ);
-            stairTop.userData = { isWayPoint: true, type: 'stair_top', id: configIndex + 1 };
+            {
+                const ud = getUserData(stairTop);
+                ud.isWayPoint = true;
+                ud.type = 'stair_top';
+                ud.id = configIndex + 1;
+            }
             this.objects.push(stairTop);
         });
     }
@@ -554,7 +573,7 @@ export class EnvironmentSystem {
         const skyMaterial = LevelMaterials.createSkyMaterial();
         
         const sky = new THREE.Mesh(skyGeo, skyMaterial);
-        sky.userData = { isSkybox: true };
+        getUserData(sky).isSkybox = true;
         this.scene.add(sky);
     }
 
@@ -594,7 +613,7 @@ export class EnvironmentSystem {
         });
         
         const particles = new THREE.Points(geometry, material);
-        particles.userData = { isDust: true };
+        getUserData(particles).isDust = true;
         this.scene.add(particles);
     }
 }

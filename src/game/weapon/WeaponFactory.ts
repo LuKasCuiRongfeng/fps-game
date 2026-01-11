@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MeshStandardNodeMaterial, MeshBasicNodeMaterial } from 'three/webgpu';
+import { MeshStandardNodeMaterial, MeshBasicNodeMaterial, type UniformNode } from 'three/webgpu';
 import { 
     time, sin, vec2, vec3, mix, float, 
     smoothstep, uv, abs, length, atan
@@ -260,7 +260,7 @@ export class WeaponFactory {
     /**
      * 创建枪口火焰
      */
-    static createMuzzleFlash(flashIntensity: any): THREE.Mesh {
+    static createMuzzleFlash(flashIntensity: UniformNode<number>): THREE.Mesh {
         const geometry = new THREE.PlaneGeometry(0.15, 0.15);
         const material = this.createMuzzleFlashMaterial(flashIntensity);
         
@@ -425,7 +425,7 @@ export class WeaponFactory {
     /**
      * 枪口火焰材质 - 动态火焰效果
      */
-    private static createMuzzleFlashMaterial(intensity: any): MeshBasicNodeMaterial {
+    private static createMuzzleFlashMaterial(intensity: UniformNode<number>): MeshBasicNodeMaterial {
         const material = new MeshBasicNodeMaterial();
         material.transparent = true;
         material.depthWrite = false;

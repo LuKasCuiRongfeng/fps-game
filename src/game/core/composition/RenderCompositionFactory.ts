@@ -1,5 +1,4 @@
 import type * as THREE from 'three';
-// @ts-ignore - WebGPU types not fully available
 import type { WebGPURenderer, PostProcessing } from 'three/webgpu';
 
 import type { UniformManager } from '../../shaders/TSLMaterials';

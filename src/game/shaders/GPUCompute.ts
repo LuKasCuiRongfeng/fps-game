@@ -3,16 +3,13 @@
  * 用于敌人AI更新、粒子系统、碰撞检测等
  */
 import * as THREE from 'three';
-// @ts-ignore - WebGPU types not fully available
-import { WebGPURenderer } from 'three/webgpu';
+import { StorageBufferAttribute, WebGPURenderer, type ComputeNode } from 'three/webgpu';
 import {
     Fn, uniform, storage, instanceIndex,
     float, vec3, vec4,
     If,
     max, sqrt, select, sub
 } from 'three/tsl';
-
-import { createStorageBufferAttribute } from './StorageBufferAttributeCompat';
 
 // ============= 敌人数据结构 =============
 export interface EnemyGPUData {
@@ -36,17 +33,17 @@ export class GPUComputeSystem {
     private maxEnemies: number;
     private maxParticles: number;
     
-    // 敌人数据存储 (使用 any 类型绕过 WebGPU 类型问题)
-    private enemyPositionBuffer!: any;
-    private enemyVelocityBuffer!: any;
-    private enemyStateBuffer!: any;
-    private enemyTargetBuffer!: any;
+    // 敌人数据存储
+    private enemyPositionBuffer!: StorageBufferAttribute;
+    private enemyVelocityBuffer!: StorageBufferAttribute;
+    private enemyStateBuffer!: StorageBufferAttribute;
+    private enemyTargetBuffer!: StorageBufferAttribute;
     
     // 粒子数据存储
-    private particlePositionBuffer!: any;
-    private particleVelocityBuffer!: any;
-    private particleColorBuffer!: any;
-    private particleLifetimeBuffer!: any;
+    private particlePositionBuffer!: StorageBufferAttribute;
+    private particleVelocityBuffer!: StorageBufferAttribute;
+    private particleColorBuffer!: StorageBufferAttribute;
+    private particleLifetimeBuffer!: StorageBufferAttribute;
     
     // Uniforms
     private deltaTime = uniform(0);
@@ -54,8 +51,8 @@ export class GPUComputeSystem {
     private gravity = uniform(-9.8);
 
     // Compute 函数
-    private enemyUpdateCompute: any;
-    private particleUpdateCompute: any;
+    private enemyUpdateCompute!: ComputeNode;
+    private particleUpdateCompute!: ComputeNode;
 
     constructor(renderer: WebGPURenderer, maxEnemies: number = 100, maxParticles: number = 10000) {
         this.renderer = renderer;
@@ -72,46 +69,38 @@ export class GPUComputeSystem {
     private initEnemyBuffers() {
         // 位置缓冲区 (vec3)
         const positions = new Float32Array(this.maxEnemies * 3);
-        // @ts-ignore - WebGPU API
-        this.enemyPositionBuffer = createStorageBufferAttribute(positions, 3);
+        this.enemyPositionBuffer = new StorageBufferAttribute(positions, 3);
         
         // 速度缓冲区 (vec3)
         const velocities = new Float32Array(this.maxEnemies * 3);
-        // @ts-ignore - WebGPU API
-        this.enemyVelocityBuffer = createStorageBufferAttribute(velocities, 3);
+        this.enemyVelocityBuffer = new StorageBufferAttribute(velocities, 3);
         
         // 状态缓冲区 (vec4: health, speed, pathIndex, isActive)
         const states = new Float32Array(this.maxEnemies * 4);
-        // @ts-ignore - WebGPU API
-        this.enemyStateBuffer = createStorageBufferAttribute(states, 4);
+        this.enemyStateBuffer = new StorageBufferAttribute(states, 4);
         
         // 目标位置缓冲区 (vec3)
         const targets = new Float32Array(this.maxEnemies * 3);
-        // @ts-ignore - WebGPU API
-        this.enemyTargetBuffer = createStorageBufferAttribute(targets, 3);
+        this.enemyTargetBuffer = new StorageBufferAttribute(targets, 3);
     }
 
     // ============= 初始化粒子缓冲区 =============
     private initParticleBuffers() {
         // 位置缓冲区 (vec3)
         const positions = new Float32Array(this.maxParticles * 3);
-        // @ts-ignore - WebGPU API
-        this.particlePositionBuffer = createStorageBufferAttribute(positions, 3);
+        this.particlePositionBuffer = new StorageBufferAttribute(positions, 3);
         
         // 速度缓冲区 (vec3)
         const velocities = new Float32Array(this.maxParticles * 3);
-        // @ts-ignore - WebGPU API
-        this.particleVelocityBuffer = createStorageBufferAttribute(velocities, 3);
+        this.particleVelocityBuffer = new StorageBufferAttribute(velocities, 3);
         
         // 颜色缓冲区 (vec4)
         const colors = new Float32Array(this.maxParticles * 4);
-        // @ts-ignore - WebGPU API
-        this.particleColorBuffer = createStorageBufferAttribute(colors, 4);
+        this.particleColorBuffer = new StorageBufferAttribute(colors, 4);
         
         // 生命周期缓冲区 (vec2: current, max)
         const lifetimes = new Float32Array(this.maxParticles * 2);
-        // @ts-ignore - WebGPU API
-        this.particleLifetimeBuffer = createStorageBufferAttribute(lifetimes, 2);
+        this.particleLifetimeBuffer = new StorageBufferAttribute(lifetimes, 2);
     }
 
     // ============= 敌人移动 Compute Shader =============
@@ -327,15 +316,15 @@ export class GPUComputeSystem {
     }
 
     // ============= 获取粒子缓冲区 (用于渲染) =============
-    public getParticlePositionBuffer(): any {
+    public getParticlePositionBuffer(): StorageBufferAttribute {
         return this.particlePositionBuffer;
     }
 
-    public getParticleColorBuffer(): any {
+    public getParticleColorBuffer(): StorageBufferAttribute {
         return this.particleColorBuffer;
     }
 
-    public getParticleLifetimeBuffer(): any {
+    public getParticleLifetimeBuffer(): StorageBufferAttribute {
         return this.particleLifetimeBuffer;
     }
 
