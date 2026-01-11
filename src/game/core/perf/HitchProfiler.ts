@@ -8,11 +8,23 @@ export type HitchProfilerSettings = {
     logBudget: number;
 };
 
+type RendererInfoSnapshot = {
+    render?: {
+        calls?: number;
+        triangles?: number;
+        lines?: number;
+        points?: number;
+    };
+};
+
+export type RendererWithInfo = {
+    info?: RendererInfoSnapshot;
+};
+
 export function resolveHitchProfilerSettings(): HitchProfilerSettings {
     // Enable by default outside production.
     // In some runtimes `import.meta.env.DEV` may be missing/falsey; `PROD` is more reliable.
-    const env = (import.meta as any)?.env;
-    const isProd = Boolean(env?.PROD);
+    const isProd = Boolean(import.meta.env?.PROD);
     const isDev = !isProd;
 
     const hitchEnabledOverride = readBooleanFlag("hitch");
@@ -71,7 +83,7 @@ export class HitchProfiler {
         frameStartMs: number;
         rawDeltaSeconds: number;
         camera: THREE.PerspectiveCamera;
-        renderer: any;
+        renderer: RendererWithInfo | null | undefined;
         systemTimings: Record<string, number>;
         enemies: {
             all: ReadonlyArray<{

@@ -3,7 +3,7 @@ import type * as THREE from 'three';
 import type { WebGPURenderer } from 'three/webgpu';
 
 import { ExplosionManager } from '../../entities/ExplosionEffect';
-import type { SoundManager } from '../SoundManager';
+import type { SoundManagerApi } from '../SoundManager';
 import type { GameServices } from '../services/GameServices';
 import { getDefaultGameServices } from '../services/GameServices';
 import type { GameEventBus } from '../events/GameEventBus';
@@ -24,7 +24,7 @@ import { AudioSystem } from '../../systems/AudioSystem';
 export type GameplayComposition = {
     explosionManager: ExplosionManager;
     weatherSystem: WeatherSystem;
-    soundManager: SoundManager;
+    soundManager: SoundManagerApi;
 
     enemyTrailSystem: EnemyTrailSystem;
     enemySystem: EnemySystem;

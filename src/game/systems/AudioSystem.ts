@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { System, FrameContext } from '../core/engine/System';
-import { SoundManager } from '../core/SoundManager';
+import type { SoundManagerApi } from '../core/SoundManager';
 import type { WeatherSystem } from '../level/WeatherSystem';
 import type { Level } from '../level/Level';
 import type { Enemy } from '../enemy/Enemy';
@@ -9,7 +9,7 @@ import type { WeatherType } from '../core/GameConfig';
 export class AudioSystem implements System {
     public readonly name = 'audio';
 
-    private readonly sound: SoundManager;
+    private readonly sound: SoundManagerApi;
     private readonly weather: WeatherSystem;
     private readonly level: Level;
     private readonly enemies: Enemy[];
@@ -19,7 +19,7 @@ export class AudioSystem implements System {
     private lastWeather: WeatherType | null = null;
 
     constructor(opts: {
-        sound: SoundManager;
+        sound: SoundManagerApi;
         weather: WeatherSystem;
         level: Level;
         enemies: Enemy[];

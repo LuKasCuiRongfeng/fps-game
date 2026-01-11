@@ -25,6 +25,7 @@ import type { ShadowSystem } from '../../systems/ShadowSystem';
 import type { RenderSystem } from '../../systems/RenderSystem';
 
 type NumberUniform = { value: number };
+type EnemyConfigType = typeof import('../GameConfig').EnemyConfig;
 
 export type SystemGraphPhases = {
     preSim: System[];
@@ -54,7 +55,7 @@ export function createAndRegisterSystemGraph(opts: {
     level: Level;
 
     // Config deps
-    enemyConfig: unknown;
+    enemyConfig: EnemyConfigType;
 
     // Domain systems already constructed elsewhere
     weatherSystem: WeatherSystem;
@@ -89,7 +90,7 @@ export function createAndRegisterSystemGraph(opts: {
     const gpuComputeUpdateSystem = new GPUComputeUpdateSystem({
         enemies: opts.simulation.enemies,
         cameraPosition: opts.camera.position,
-        enemyConfig: opts.enemyConfig as any,
+        enemyConfig: opts.enemyConfig,
     });
 
     const particleUpdateSystem = new ParticleUpdateSystem(opts.simulation.particles);

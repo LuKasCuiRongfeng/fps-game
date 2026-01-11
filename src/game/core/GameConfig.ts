@@ -7,9 +7,9 @@ function deepFreeze<T>(obj: T): T {
     if (!obj || typeof obj !== 'object') return obj;
     Object.freeze(obj);
 
-    const anyObj = obj as any;
-    for (const key of Object.getOwnPropertyNames(anyObj)) {
-        const value = anyObj[key];
+    const record = obj as Record<string, unknown>;
+    for (const key of Object.getOwnPropertyNames(record)) {
+        const value = record[key];
         if (value && typeof value === 'object' && !Object.isFrozen(value)) {
             deepFreeze(value);
         }

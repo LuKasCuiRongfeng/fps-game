@@ -44,12 +44,50 @@ import { attachDefaultGameEventHandlers } from './events/DefaultGameEventHandler
 import type { GameRuntime } from './runtime/GameRuntime';
 import type { GpuSimulationFacade, ParticleSimulation } from './gpu/GpuSimulationFacade';
 
+type GameRuntimeBuilder = Pick<
+    GameRuntime,
+    | "container"
+    | "renderer"
+    | "objects"
+    | "uniforms"
+    | "services"
+    | "events"
+    | "clock"
+    | "fpsCounter"
+    | "hitchProfiler"
+    | "systemManager"
+    | "frameContext"
+    | "systemTimings"
+    | "loadedGate"
+    | "disposeDefaultEventHandlers"
+> & {
+    scene?: GameRuntime["scene"];
+    camera?: GameRuntime["camera"];
+    world?: Pick<GameRuntime["world"], "physicsSystem" | "level"> & {
+        pathfinding?: GameRuntime["world"]["pathfinding"];
+    };
+    gpu?: GameRuntime["gpu"];
+    render?: {
+        ambientLight: GameRuntime["render"]["ambientLight"];
+        sunLight: GameRuntime["render"]["sunLight"];
+        postProcessing?: GameRuntime["render"]["postProcessing"];
+        scopeAimProgress?: GameRuntime["render"]["scopeAimProgress"];
+        shadowSystem?: GameRuntime["render"]["shadowSystem"];
+        renderSystem?: GameRuntime["render"]["renderSystem"];
+    };
+    gameplay?: GameRuntime["gameplay"];
+    player?: GameRuntime["player"];
+};
+
 export class Game {
     private container: HTMLElement;
     private clock: THREE.Clock;
 
     // Runtime graph: renderer/scene/camera/systems are grouped here to keep Game as a composition root.
     private runtime: GameRuntime | null = null;
+
+    // During the init pipeline we build up the runtime incrementally without using `null as any`.
+    private runtimeBuilder: GameRuntimeBuilder | null = null;
 
     private initConfig = resolveInitConfig();
 
@@ -152,6 +190,76 @@ export class Game {
         );
     }
 
+    private requireBuilder(step: string): GameRuntimeBuilder {
+        const builder = this.runtimeBuilder;
+        if (!builder) {
+            throw new Error(`Game init error: runtime builder missing at ${step}`);
+        }
+        return builder;
+    }
+
+    private finalizeRuntime(): void {
+        const builder = this.requireBuilder("finalizeRuntime");
+
+        const assertDefined = <T>(value: T | null | undefined, name: string): T => {
+            if (value === undefined || value === null) {
+                throw new Error(`Game init error: ${name} not ready`);
+            }
+            return value;
+        };
+
+        const scene = assertDefined(builder.scene, "scene");
+        const camera = assertDefined(builder.camera, "camera");
+
+        const worldPartial = assertDefined(builder.world, "world");
+        const world: GameRuntime["world"] = {
+            physicsSystem: worldPartial.physicsSystem,
+            level: worldPartial.level,
+            pathfinding: assertDefined(worldPartial.pathfinding, "world.pathfinding"),
+        };
+
+        const gpu = assertDefined(builder.gpu, "gpu");
+
+        const renderPartial = assertDefined(builder.render, "render");
+        const render: GameRuntime["render"] = {
+            postProcessing: assertDefined(renderPartial.postProcessing, "render.postProcessing"),
+            scopeAimProgress: assertDefined(renderPartial.scopeAimProgress, "render.scopeAimProgress"),
+            shadowSystem: assertDefined(renderPartial.shadowSystem, "render.shadowSystem"),
+            renderSystem: assertDefined(renderPartial.renderSystem, "render.renderSystem"),
+            ambientLight: renderPartial.ambientLight,
+            sunLight: renderPartial.sunLight,
+        };
+
+        const gameplay = assertDefined(builder.gameplay, "gameplay");
+        const player = assertDefined(builder.player, "player");
+
+        this.runtime = {
+            container: builder.container,
+            renderer: builder.renderer,
+            scene,
+            camera,
+            objects: builder.objects,
+            uniforms: builder.uniforms,
+            services: builder.services,
+            events: builder.events,
+            clock: builder.clock,
+            fpsCounter: builder.fpsCounter,
+            hitchProfiler: builder.hitchProfiler,
+            systemManager: builder.systemManager,
+            frameContext: builder.frameContext,
+            systemTimings: builder.systemTimings,
+            loadedGate: builder.loadedGate,
+            world,
+            gpu,
+            render,
+            gameplay,
+            player,
+            disposeDefaultEventHandlers: builder.disposeDefaultEventHandlers,
+        };
+
+        this.runtimeBuilder = null;
+    }
+
     private initRendererAndUniforms(): void {
         this.updateProgress(10, "i18n:loading.stage.webgpu");
 
@@ -168,12 +276,9 @@ export class Game {
 
         const renderer = createWebGPURenderer(this.container);
 
-        this.runtime = {
+        this.runtimeBuilder = {
             container: this.container,
             renderer,
-            // placeholders; filled in subsequent init steps
-            scene: null as any,
-            camera: null as any,
             objects: this.objects,
             uniforms,
             services: this.services,
@@ -190,11 +295,6 @@ export class Game {
             },
             systemTimings: Object.create(null),
             loadedGate: this.loadedGate,
-            world: null as any,
-            gpu: null as any,
-            render: null as any,
-            gameplay: null as any,
-            player: null as any,
             disposeDefaultEventHandlers: this.disposeDefaultEventHandlers,
         };
     }
@@ -202,18 +302,13 @@ export class Game {
     private initSceneAndCamera(): void {
         this.updateProgress(20, "i18n:loading.stage.scene");
 
-        if (!this.runtime) return;
+        const builder = this.requireBuilder("initSceneAndCamera");
 
         const created = createSceneAndCamera();
-        this.runtime.scene = created.scene;
-        this.runtime.camera = created.camera;
-
+        builder.scene = created.scene;
+        builder.camera = created.camera;
         // render module is filled later; store lights there for discoverability
-        this.runtime.render = {
-            postProcessing: null as any,
-            scopeAimProgress: null as any,
-            shadowSystem: null as any,
-            renderSystem: null as any,
+        builder.render = {
             ambientLight: created.ambientLight,
             sunLight: created.sunLight,
         };
@@ -223,36 +318,39 @@ export class Game {
         this.updateProgress(30, "i18n:loading.stage.physics");
         enableBVH();
 
-        if (!this.runtime) return;
+        const builder = this.requireBuilder("initPhysicsAndLevel");
+        if (!builder.scene) return;
 
         const physicsSystem = new PhysicsSystem();
-        const level = new Level(this.runtime.scene, this.objects, physicsSystem);
-        this.runtime.world = {
+        const level = new Level(builder.scene, this.objects, physicsSystem);
+        builder.world = {
             physicsSystem,
             level,
-            pathfinding: null as any,
         };
     }
 
     private initPathfinding(): void {
         this.updateProgress(45, "i18n:loading.stage.pathfinding");
-        if (!this.runtime) return;
+        const builder = this.requireBuilder("initPathfinding");
+        if (!builder.world) return;
         const pathfinding = new Pathfinding(this.objects);
-        this.runtime.world.pathfinding = pathfinding;
+        builder.world.pathfinding = pathfinding;
     }
 
     private initComputeAndParticles(): void {
         this.updateProgress(55, "i18n:loading.stage.compute");
-        if (!this.runtime) return;
+
+        const builder = this.requireBuilder("initComputeAndParticles");
+        if (!builder.scene) return;
 
         const gpu = createGpuSystems({
-            renderer: this.runtime.renderer,
-            scene: this.runtime.scene,
+            renderer: builder.renderer,
+            scene: builder.scene,
             gpuCompute: this.initConfig.gpuCompute,
             particles: this.initConfig.particles,
         });
 
-        this.runtime.gpu = {
+        builder.gpu = {
             gpuCompute: gpu.gpuCompute,
             particleSystem: gpu.particleSystem,
             simulation: createWebGpuSimulationFacade({
@@ -265,26 +363,27 @@ export class Game {
     private initEffectsWeatherSoundAndGameplay(): void {
         this.updateProgress(65, "i18n:loading.stage.effects");
 
-        if (!this.runtime) return;
+        const builder = this.requireBuilder("initEffectsWeatherSoundAndGameplay");
+        if (!builder.scene || !builder.camera || !builder.world || !builder.world.pathfinding || !builder.gpu || !builder.render) return;
 
         const gameplay = createGameplayComposition({
             events: this.events,
             services: this.services,
-            scene: this.runtime.scene,
-            camera: this.runtime.camera,
-            renderer: this.runtime.renderer,
+            scene: builder.scene,
+            camera: builder.camera,
+            renderer: builder.renderer,
             objects: this.objects,
-            level: this.runtime.world.level,
-            physicsSystem: this.runtime.world.physicsSystem,
-            pathfinding: this.runtime.world.pathfinding,
-            simulation: this.runtime.gpu.simulation,
-            uniforms: this.runtime.uniforms,
-            ambientLight: this.runtime.render.ambientLight,
-            sunLight: this.runtime.render.sunLight,
+            level: builder.world.level,
+            physicsSystem: builder.world.physicsSystem,
+            pathfinding: builder.world.pathfinding,
+            simulation: builder.gpu.simulation,
+            uniforms: builder.uniforms,
+            ambientLight: builder.render.ambientLight,
+            sunLight: builder.render.sunLight,
             maxGpuEnemies: 100,
         });
 
-        this.runtime.gameplay = {
+        builder.gameplay = {
             explosionManager: gameplay.explosionManager,
             weatherSystem: gameplay.weatherSystem,
             soundManager: gameplay.soundManager,
@@ -300,27 +399,28 @@ export class Game {
     private initPlayer(): void {
         this.updateProgress(75, "i18n:loading.stage.player");
 
-        if (!this.runtime) return;
+        const builder = this.requireBuilder("initPlayer");
+        if (!builder.scene || !builder.camera || !builder.world || !builder.gpu || !builder.gameplay) return;
 
         const controller = createPlayerController({
             settings: this.runtimeSettingsSource,
             services: this.services,
             events: this.events,
-            camera: this.runtime.camera,
+            camera: builder.camera,
             container: this.container,
-            scene: this.runtime.scene,
+            scene: builder.scene,
             objects: this.objects,
-            physicsSystem: this.runtime.world.physicsSystem,
-            level: this.runtime.world.level,
-            particleSystem: this.runtime.gpu.simulation.particles,
-            enemies: this.runtime.gameplay.enemySystem.all,
-            pickups: this.runtime.gameplay.pickupSystem,
-            grenades: this.runtime.gameplay.grenadeSystem,
-            weather: this.runtime.gameplay.weatherSystem,
+            physicsSystem: builder.world.physicsSystem,
+            level: builder.world.level,
+            particleSystem: builder.gpu.simulation.particles,
+            enemies: builder.gameplay.enemySystem.all,
+            pickups: builder.gameplay.pickupSystem,
+            grenades: builder.gameplay.grenadeSystem,
+            weather: builder.gameplay.weatherSystem,
             spawn: { x: 0, z: 0 },
         });
 
-        this.runtime.player = { controller };
+        builder.player = { controller };
     }
 
     public setRuntimeSettings(settings: RuntimeSettings): void {
@@ -351,46 +451,50 @@ export class Game {
 
     private initPostFxAndRenderSystems(): void {
         this.updateProgress(85, "i18n:loading.stage.postfx");
-        if (!this.runtime) return;
+        const builder = this.requireBuilder("initPostFxAndRenderSystems");
+        if (!builder.scene || !builder.camera || !builder.render) return;
         const render = createRenderComposition({
-            renderer: this.runtime.renderer,
-            scene: this.runtime.scene,
-            camera: this.runtime.camera,
-            uniforms: this.runtime.uniforms,
-            sunLight: this.runtime.render.sunLight,
+            renderer: builder.renderer,
+            scene: builder.scene,
+            camera: builder.camera,
+            uniforms: builder.uniforms,
+            sunLight: builder.render.sunLight,
         });
-        this.runtime.render = {
-            ...this.runtime.render,
-            postProcessing: render.postProcessing,
-            scopeAimProgress: render.scopeAimProgress,
-            shadowSystem: render.shadowSystem,
-            renderSystem: render.renderSystem,
-        };
+        builder.render.postProcessing = render.postProcessing;
+        builder.render.scopeAimProgress = render.scopeAimProgress;
+        builder.render.shadowSystem = render.shadowSystem;
+        builder.render.renderSystem = render.renderSystem;
     }
 
     private initCoreUpdateSystems(): void {
-        if (!this.runtime) return;
+        const builder = this.requireBuilder("initCoreUpdateSystems");
+        if (!builder.camera || !builder.world || !builder.gpu || !builder.render || !builder.gameplay || !builder.player) return;
+        if (!builder.render.scopeAimProgress || !builder.render.shadowSystem || !builder.render.renderSystem) return;
+
         const core = createAndRegisterSystemGraph({
-            systemManager: this.runtime.systemManager,
-            player: this.runtime.player.controller,
-            camera: this.runtime.camera,
-            scopeAimProgress: this.runtime.render.scopeAimProgress,
-            uniforms: this.runtime.uniforms,
-            simulation: this.runtime.gpu.simulation,
-            level: this.runtime.world.level,
+            systemManager: builder.systemManager,
+            player: builder.player.controller,
+            camera: builder.camera,
+            scopeAimProgress: builder.render.scopeAimProgress,
+            uniforms: builder.uniforms,
+            simulation: builder.gpu.simulation,
+            level: builder.world.level,
             enemyConfig: EnemyConfig,
-            weatherSystem: this.runtime.gameplay.weatherSystem,
-            enemySystem: this.runtime.gameplay.enemySystem,
-            enemyTrailSystem: this.runtime.gameplay.enemyTrailSystem,
-            grenadeSystem: this.runtime.gameplay.grenadeSystem,
-            pickupSystem: this.runtime.gameplay.pickupSystem,
-            spawnSystem: this.runtime.gameplay.spawnSystem,
-            audioSystem: this.runtime.gameplay.audioSystem,
-            shadowSystem: this.runtime.render.shadowSystem,
-            renderSystem: this.runtime.render.renderSystem,
+            weatherSystem: builder.gameplay.weatherSystem,
+            enemySystem: builder.gameplay.enemySystem,
+            enemyTrailSystem: builder.gameplay.enemyTrailSystem,
+            grenadeSystem: builder.gameplay.grenadeSystem,
+            pickupSystem: builder.gameplay.pickupSystem,
+            spawnSystem: builder.gameplay.spawnSystem,
+            audioSystem: builder.gameplay.audioSystem,
+            shadowSystem: builder.render.shadowSystem,
+            renderSystem: builder.render.renderSystem,
         });
 
         void core;
+
+        // All required runtime pieces are now available; freeze into a fully-typed runtime object.
+        this.finalizeRuntime();
 
         this.updateProgress(90, "i18n:loading.stage.spawn");
         window.addEventListener("resize", this.onResizeBound);

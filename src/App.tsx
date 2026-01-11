@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import './App.css';
 import { Game } from './game/core/Game';
-import { GameStateService, GameState } from './game/core/GameState';
+import type { GameState } from './game/core/GameState';
+import { getDefaultGameServices } from './game/core/services/GameServices';
+import type { GameServices } from './game/core/services/GameServices';
 import { LoadingScreen } from './ui/components/LoadingScreen';
 import { HUD } from './ui/hud/HUD';
 import { GameOverScreen } from './ui/components/GameOverScreen';
@@ -13,6 +15,11 @@ import { LanguageToggle } from './ui/components/LanguageToggle';
 function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Game | null>(null);
+  const servicesRef = useRef<GameServices | null>(null);
+  if (!servicesRef.current) {
+    servicesRef.current = getDefaultGameServices();
+  }
+  const services = servicesRef.current;
   const settingsStoreRef = useRef<RuntimeSettingsStore | null>(null);
   if (!settingsStoreRef.current) {
     settingsStoreRef.current = RuntimeSettingsStore.loadFromLocalStorage();
@@ -79,14 +86,14 @@ function App() {
                         setLoadingProgress(progress);
                         setLoadingDesc(desc);
                     },
-                    { runtimeSettings: settingsStore.get() }
+                    { runtimeSettings: settingsStore.get(), services }
                 );
             }
         }, 50);
     }
 
     // Subscribe to game state
-    const unsubscribe = GameStateService.getInstance().subscribe((state) => {
+            const unsubscribe = services.state.subscribe((state) => {
       setGameState(state);
     });
     
@@ -124,7 +131,9 @@ function App() {
         gameRef.current = null;
       }
     };
-  }, [settingsStore]);
+  }, [settingsStore, services]);
+
+  // services is stable (ref-backed) but include it for exhaustive-deps.
 
   useEffect(() => {
     // Persist + push into the game runtime.
@@ -134,7 +143,7 @@ function App() {
 
   useEffect(() => {
     return settingsStore.subscribe((s) => setRuntimeSettings(s));
-  }, [settingsStore]);
+  }, [settingsStore, services]);
 
   useEffect(() => {
     // Prevent the game's click-to-lock handler from firing while UI overlays are active.

@@ -18,7 +18,21 @@ export interface GameState {
 
 export type GameStateListener = (state: GameState) => void;
 
-export class GameStateService {
+export interface GameStateStore {
+    getState(): GameState;
+    updateHealth(amount: number): void;
+    updateAmmo(amount: number): void;
+    updateGrenades(amount: number): void;
+    setCurrentWeapon(weapon: WeaponType): void;
+    setChargeProgress(progress: number): void;
+    setStance(stance: StanceType): void;
+    updateScore(amount: number): void;
+    setPickupHint(hint: string | null): void;
+    reset(): void;
+    subscribe(listener: GameStateListener): () => void;
+}
+
+export class GameStateService implements GameStateStore {
     private static instance: GameStateService;
     private state: GameState;
     private listeners: GameStateListener[] = [];

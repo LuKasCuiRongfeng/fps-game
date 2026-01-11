@@ -3,7 +3,7 @@ import type { WebGPURenderer, PostProcessing } from "three/webgpu";
 
 import type { PlayerController } from "../../player/PlayerController";
 import type { ExplosionManager } from "../../entities/ExplosionEffect";
-import type { SoundManager } from "../SoundManager";
+import type { SoundManagerApi } from "../SoundManager";
 import type { Level } from "../../level/Level";
 import type { Pathfinding } from "../Pathfinding";
 import type { PhysicsSystem } from "../PhysicsSystem";
@@ -78,7 +78,7 @@ export interface GameRuntime {
     gameplay: {
         explosionManager: ExplosionManager;
         weatherSystem: WeatherSystem;
-        soundManager: SoundManager | null;
+        soundManager: SoundManagerApi | null;
 
         enemyTrailSystem: EnemyTrailSystem;
         enemySystem: EnemySystem;

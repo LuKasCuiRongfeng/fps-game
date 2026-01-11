@@ -48,7 +48,8 @@ export function createPostFXPipeline(opts: {
     return { postProcessing: pp, scopeAimProgress: scopeAimProgressNode as unknown as NumberUniform };
 }
 
-function createDamageOverlay(inputColor: any, uniforms: UniformManager) {
+function createDamageOverlay(inputColor: unknown, uniforms: UniformManager) {
+    const color = inputColor as any;
     const coord = screenUV;
     const damageAmount = uniforms.damageFlash;
 
@@ -63,12 +64,13 @@ function createDamageOverlay(inputColor: any, uniforms: UniformManager) {
 
     const damageStrength = damageAmount.mul(edgeFade).mul(pulse);
 
-    const finalColor = mix(inputColor, vec4(damageColor, 1), damageStrength.mul(0.5));
+    const finalColor = mix(color, vec4(damageColor, 1), damageStrength.mul(0.5));
 
     return finalColor;
 }
 
-function createVignetteEffect(inputColor: any) {
+function createVignetteEffect(inputColor: unknown) {
+    const color = inputColor as any;
     const coord = screenUV;
 
     const center = vec3(0.5, 0.5, 0);
@@ -81,15 +83,15 @@ function createVignetteEffect(inputColor: any) {
     const vignette = smoothstep(vignetteRadius, vignetteRadius.sub(vignetteSoftness), dist);
 
     const darkening = mix(float(1), vignette, vignetteStrength);
-    const finalColor = inputColor.mul(darkening);
+    const finalColor = color.mul(darkening);
 
     return finalColor;
 }
 
-function createScopeEffect(inputColor: any, scopeAimProgress: any) {
+function createScopeEffect(inputColor: unknown, scopeAimProgress: unknown) {
+    const color = inputColor as any;
+    const aimProgress = scopeAimProgress as any;
     const coord = screenUV;
-
-    const aimProgress = scopeAimProgress;
 
     const aspect = float(16.0 / 9.0);
 
@@ -134,9 +136,9 @@ function createScopeEffect(inputColor: any, scopeAimProgress: any) {
     const redDot = smoothstep(dotRadius, dotRadius.mul(0.5), dist);
     const redDotColor = vec3(1.0, 0.1, 0.05);
 
-    let result = inputColor;
+    let result = color;
 
-    result = mix(inputColor, vec4(borderColor, 1), borderMask.mul(aimProgress));
+    result = mix(color, vec4(borderColor, 1), borderMask.mul(aimProgress));
     result = mix(result, vec4(0, 0, 0, 1), outerMask.mul(aimProgress));
 
     const crosshairVisible = crosshair.mul(float(1).sub(borderMask)).mul(aimProgress);

@@ -5,7 +5,7 @@ export type GameEventHandler<T extends GameEventType = GameEventType> = (
 ) => void;
 
 export class GameEventBus {
-    private handlers: Map<GameEventType, Set<GameEventHandler<any>>> = new Map();
+    private handlers: Map<GameEventType, Set<(event: GameEvent) => void>> = new Map();
 
     public on<T extends GameEventType>(type: T, handler: GameEventHandler<T>): () => void {
         let set = this.handlers.get(type);
@@ -13,10 +13,10 @@ export class GameEventBus {
             set = new Set();
             this.handlers.set(type, set);
         }
-        set.add(handler as GameEventHandler<any>);
+        set.add(handler as (event: GameEvent) => void);
         return () => {
             const current = this.handlers.get(type);
-            current?.delete(handler as GameEventHandler<any>);
+            current?.delete(handler as (event: GameEvent) => void);
             if (current && current.size === 0) this.handlers.delete(type);
         };
     }
@@ -26,6 +26,6 @@ export class GameEventBus {
         if (!set || set.size === 0) return;
         // Snapshot to allow handlers to unsubscribe safely during emit.
         const snapshot = Array.from(set);
-        for (const handler of snapshot) handler(event as any);
+        for (const handler of snapshot) handler(event);
     }
 }

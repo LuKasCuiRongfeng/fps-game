@@ -22,6 +22,11 @@ export type ProgressCallback = (progress: number, desc: string) => void;
 type WebGPUCompileAsync = (scene: THREE.Scene, camera: THREE.Camera) => Promise<unknown>;
 type WebGPUCompile = (scene: THREE.Scene, camera: THREE.Camera) => unknown;
 
+type RendererCompileApi = {
+    compileAsync?: WebGPUCompileAsync;
+    compile?: WebGPUCompile;
+};
+
 export async function runShaderWarmup(params: {
     renderer: WebGPURenderer;
     scene: THREE.Scene;
@@ -216,8 +221,9 @@ export async function runShaderWarmup(params: {
     };
 
     try {
-        const compileAsync = (renderer as any).compileAsync as WebGPUCompileAsync | undefined;
-        const compile = (renderer as any).compile as WebGPUCompile | undefined;
+        const rendererApi = renderer as unknown as RendererCompileApi;
+        const compileAsync = rendererApi.compileAsync;
+        const compile = rendererApi.compile;
 
         // Force-compile scene materials to avoid first-look hitches.
         if (compileAsync && resolved.doCompileViews) {
@@ -267,14 +273,9 @@ export async function runShaderWarmup(params: {
                 const noCullPrevFlags: boolean[] = [];
                 scene.traverse((obj) => {
                     if (!obj) return;
-                    // @ts-ignore - runtime property
-                    if (typeof (obj as any).frustumCulled === "boolean") {
-                        noCullObjects.push(obj);
-                        // @ts-ignore
-                        noCullPrevFlags.push((obj as any).frustumCulled);
-                        // @ts-ignore
-                        (obj as any).frustumCulled = false;
-                    }
+                    noCullObjects.push(obj);
+                    noCullPrevFlags.push(obj.frustumCulled);
+                    obj.frustumCulled = false;
                 });
 
                 try {
@@ -287,8 +288,7 @@ export async function runShaderWarmup(params: {
                     await new Promise((resolve) => setTimeout(resolve, 0));
                 } finally {
                     for (let i = 0; i < noCullObjects.length; i++) {
-                        // @ts-ignore
-                        (noCullObjects[i] as any).frustumCulled = noCullPrevFlags[i];
+                        noCullObjects[i].frustumCulled = noCullPrevFlags[i];
                     }
                 }
             }

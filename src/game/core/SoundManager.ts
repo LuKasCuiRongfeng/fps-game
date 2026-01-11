@@ -1,7 +1,26 @@
 import { SoundConfig } from './GameConfig';
 import { invoke } from '@tauri-apps/api/core';
 
-export class SoundManager {
+export interface SoundManagerApi {
+    resume(): Promise<void>;
+
+    setBGMState(state: 'sunny' | 'rainy' | 'combat' | 'none'): void;
+    playWeatherSound(weather: string | null): void;
+
+    playWeaponSwitch(): void;
+    playShoot(): void;
+    playSniperShoot(): void;
+    playHit(): void;
+    playDamage(): void;
+    playPickup(): void;
+    playGrenadeThrow(): void;
+    playHitImpact(): void;
+    playExplosion(): void;
+    playEnemyDeath(): void;
+    playJump(): void;
+}
+
+export class SoundManager implements SoundManagerApi {
     private static instance: SoundManager;
     private audioContext: AudioContext;
     private masterGain: GainNode;
