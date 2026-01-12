@@ -236,6 +236,14 @@ export class Enemy {
         return `${this.type}:${this.weaponId}`;
     }
 
+    public getMoveSpeed(): number {
+        return this.speed;
+    }
+
+    public getMaxHealth(): number {
+        return this.health;
+    }
+
     
     
 
@@ -243,9 +251,12 @@ export class Enemy {
         playerPosition: THREE.Vector3, 
         delta: number, 
         obstacles: THREE.Object3D[], 
-        pathfinding: Pathfinding
+        pathfinding: Pathfinding,
+        opts?: { movement?: 'cpu' | 'gpu' }
     ): { fired: boolean; hit: boolean; damage: number } {
         const result = { fired: false, hit: false, damage: 0 };
+
+        const movementMode = opts?.movement ?? 'cpu';
         
         if (this.isDead) {
             // 死亡溶解动画
@@ -371,32 +382,34 @@ export class Enemy {
         this.updateWalkAnimation();
         
         // 更新路径
-        this.pathUpdateTimer += delta;
-        if (this.pathUpdateTimer >= this.pathUpdateInterval) {
-            this.pathUpdateTimer = 0;
-            // IMPORTANT:
-            // `playerPosition` is the camera position (can be high when the player jumps or stands on a tall obstacle).
-            // Pathfinding has a stairs heuristic that triggers on vertical distance, so feeding it camera Y can cause
-            // enemies to "randomly" head for stairs even when the player is just on a non-navigable box.
-            // We instead compute a navigation target Y at the player's XZ: prefer a nearby walkable surface (stairs/platform),
-            // otherwise fall back to terrain height.
-            // Pathfinding is the heaviest part of enemy AI. Only run it when it matters:
-            // - large vertical delta (stairs/elevation)
-            // - we appear stuck (direct chase is blocked)
-            // - relatively close to the player (routing around dense obstacles)
-            const assumedCameraToFeet = 1.6;
-            const playerFeetY = playerPosition.y - assumedCameraToFeet;
-            const terrainY = this.onGetGroundHeight ? this.onGetGroundHeight(playerPosition.x, playerPosition.z) : 0;
-            const approxPlayerNavY = Math.abs(playerFeetY - terrainY) < 1.0 ? terrainY : playerFeetY;
-            const verticalDelta = Math.abs(approxPlayerNavY - this.mesh.position.y);
+        if (movementMode === 'cpu') {
+            this.pathUpdateTimer += delta;
+            if (this.pathUpdateTimer >= this.pathUpdateInterval) {
+                this.pathUpdateTimer = 0;
+                // IMPORTANT:
+                // `playerPosition` is the camera position (can be high when the player jumps or stands on a tall obstacle).
+                // Pathfinding has a stairs heuristic that triggers on vertical distance, so feeding it camera Y can cause
+                // enemies to "randomly" head for stairs even when the player is just on a non-navigable box.
+                // We instead compute a navigation target Y at the player's XZ: prefer a nearby walkable surface (stairs/platform),
+                // otherwise fall back to terrain height.
+                // Pathfinding is the heaviest part of enemy AI. Only run it when it matters:
+                // - large vertical delta (stairs/elevation)
+                // - we appear stuck (direct chase is blocked)
+                // - relatively close to the player (routing around dense obstacles)
+                const assumedCameraToFeet = 1.6;
+                const playerFeetY = playerPosition.y - assumedCameraToFeet;
+                const terrainY = this.onGetGroundHeight ? this.onGetGroundHeight(playerPosition.x, playerPosition.z) : 0;
+                const approxPlayerNavY = Math.abs(playerFeetY - terrainY) < 1.0 ? terrainY : playerFeetY;
+                const verticalDelta = Math.abs(approxPlayerNavY - this.mesh.position.y);
 
-            const needsVerticalNav = verticalDelta > 2.0;
-            const isStuck = this.stuckTimer > 0.75;
-            const isCloseEnoughForRouting = distanceToPlayer < 80;
+                const needsVerticalNav = verticalDelta > 2.0;
+                const isStuck = this.stuckTimer > 0.75;
+                const isCloseEnoughForRouting = distanceToPlayer < 80;
 
-            if (needsVerticalNav || isStuck || isCloseEnoughForRouting) {
-                const navTarget = this.getNavTargetPosition(playerPosition);
-                this.currentPath = pathfinding.findPath(this.mesh.position, navTarget);
+                if (needsVerticalNav || isStuck || isCloseEnoughForRouting) {
+                    const navTarget = this.getNavTargetPosition(playerPosition);
+                    this.currentPath = pathfinding.findPath(this.mesh.position, navTarget);
+                }
             }
         }
 
@@ -521,6 +534,27 @@ export class Enemy {
             } else {
                 targetPos = nextPoint;
             }
+        }
+
+        // GPU-driven movement: keep combat/aim/LOD running but skip CPU movement + collision integration.
+        if (movementMode === 'gpu') {
+            // Face the player so shooting looks correct.
+            const toPlayerDir = this.tmpYawDir.subVectors(playerPosition, this.mesh.position);
+            toPlayerDir.y = 0;
+            if (toPlayerDir.lengthSq() > 0.001) {
+                this.targetRotation = Math.atan2(toPlayerDir.x, toPlayerDir.z);
+            }
+
+            // Smooth turning
+            let rotationDiff = this.targetRotation - this.currentRotation;
+            while (rotationDiff > Math.PI) rotationDiff -= Math.PI * 2;
+            while (rotationDiff < -Math.PI) rotationDiff += Math.PI * 2;
+            this.currentRotation += rotationDiff * Math.min(1, this.rotationSpeed * delta);
+            while (this.currentRotation > Math.PI) this.currentRotation -= Math.PI * 2;
+            while (this.currentRotation < -Math.PI) this.currentRotation += Math.PI * 2;
+            this.mesh.rotation.y = this.currentRotation;
+
+            return result;
         }
 
         // 移动计算

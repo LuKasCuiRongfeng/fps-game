@@ -29,6 +29,8 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
     private physicsCandidates: THREE.Object3D[] = [];
 
     private appendRaycastTargetsInto(root: THREE.Object3D, out: THREE.Object3D[]) {
+        if (!root.visible) return;
+
         // Fast path: mesh
         if (root instanceof THREE.Mesh) {
             out.push(root);
@@ -39,13 +41,16 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
         const ud = getUserData(root);
         const cached = ud._hitscanTargets;
         if (cached) {
-            for (const t of cached) out.push(t);
+            for (const t of cached) {
+                if (t.visible) out.push(t);
+            }
             return;
         }
 
         const targets: THREE.Object3D[] = [];
         root.traverse((obj) => {
             if (!(obj instanceof THREE.Mesh)) return;
+            if (!obj.visible) return;
             const userData = getUserData(obj);
             if (userData.noRaycast) return;
             if (userData.isWayPoint) return;
@@ -70,6 +75,34 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
             if (ud.isEnemy && ud.entity) return ud.entity;
             cur = cur.parent;
         }
+        return null;
+    }
+
+    private tmpSphereCenter = new THREE.Vector3();
+
+    private raySphereIntersect(
+        rayOrigin: THREE.Vector3,
+        rayDirection: THREE.Vector3,
+        sphereCenter: THREE.Vector3,
+        sphereRadius: number
+    ): number | null {
+        // Solve |o + d*t - c|^2 = r^2 for smallest positive t.
+        // Assumes rayDirection is normalized.
+        const ox = rayOrigin.x - sphereCenter.x;
+        const oy = rayOrigin.y - sphereCenter.y;
+        const oz = rayOrigin.z - sphereCenter.z;
+
+        const b = ox * rayDirection.x + oy * rayDirection.y + oz * rayDirection.z;
+        const c = ox * ox + oy * oy + oz * oz - sphereRadius * sphereRadius;
+        const disc = b * b - c;
+        if (disc < 0) return null;
+
+        const sqrtDisc = Math.sqrt(disc);
+        const t1 = -b - sqrtDisc;
+        if (t1 > 0.0001) return t1;
+
+        const t2 = -b + sqrtDisc;
+        if (t2 > 0.0001) return t2;
         return null;
     }
 
@@ -367,8 +400,43 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
             break;
         }
 
+        const rayHitDist = hitPoint ? rayOrigin.distanceTo(hitPoint) : Number.POSITIVE_INFINITY;
+
+        // Fast enemy hit test for far enemies rendered as GPU impostors:
+        // CPU raycaster can't intersect shader-driven instance transforms.
+        let enemySphereHitEnemy: Enemy | null = null;
+        let enemySphereHitDist = Number.POSITIVE_INFINITY;
+        let enemySphereHitPoint: THREE.Vector3 | null = null;
+        let enemySphereHitNormal: THREE.Vector3 | null = null;
+
+        const enemyHitRadius = 0.65;
+        const enemyHitYOffset = 0.8;
+        for (const enemy of this.enemies) {
+            if (enemy.isDead) continue;
+            if (enemy.mesh.visible) continue;
+
+            const center = this.tmpSphereCenter.set(
+                enemy.mesh.position.x,
+                enemy.mesh.position.y + enemyHitYOffset,
+                enemy.mesh.position.z
+            );
+
+            const t = this.raySphereIntersect(rayOrigin, rayDirection, center, enemyHitRadius);
+            if (t === null) continue;
+            if (t > this.def.range) continue;
+
+            if (t < enemySphereHitDist) {
+                enemySphereHitDist = t;
+                enemySphereHitEnemy = enemy;
+                enemySphereHitPoint = this.tmpHitPoint.copy(rayOrigin).addScaledVector(rayDirection, t);
+                enemySphereHitNormal = this.tmpHitNormal.copy(enemySphereHitPoint).sub(center).normalize();
+            }
+        }
+
         // ground raymarch (optional)
-        if (!hitPoint && this.onGetGroundHeight && rayDirection.y < -0.0001) {
+        let groundHitDist = Number.POSITIVE_INFINITY;
+        let groundHitPoint: THREE.Vector3 | null = null;
+        if (this.onGetGroundHeight && rayDirection.y < -0.0001) {
             const maxDist = Math.min(120, this.def.range);
             // Keep it cheap.
             const stepSize = 2.0;
@@ -380,16 +448,28 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
                 dist += stepSize;
                 const terrainHeight = this.onGetGroundHeight(currentPos.x, currentPos.z);
                 if (currentPos.y < terrainHeight) {
-                    hitPoint = this.tmpGroundHitPoint.copy(rayOrigin).addScaledVector(rayDirection, dist);
-                    hitNormal = this.tmpUp;
-                    hitObject = null;
+                    groundHitDist = dist;
+                    groundHitPoint = this.tmpGroundHitPoint.copy(rayOrigin).addScaledVector(rayDirection, dist);
                     break;
                 }
             }
         }
 
+        // Choose closest among mesh hit, enemy sphere hit, and terrain hit.
+        let enemy: Enemy | null = null;
+        if (enemySphereHitEnemy && enemySphereHitDist < rayHitDist && enemySphereHitDist < groundHitDist) {
+            enemy = enemySphereHitEnemy;
+            hitPoint = enemySphereHitPoint;
+            hitNormal = enemySphereHitNormal;
+            hitObject = null;
+        } else if (groundHitPoint && groundHitDist < rayHitDist) {
+            hitPoint = groundHitPoint;
+            hitNormal = this.tmpUp;
+            hitObject = null;
+        }
+
         if (hitPoint) {
-            const enemy = hitObject ? this.findEnemyFromObject(hitObject) : null;
+            if (!enemy) enemy = hitObject ? this.findEnemyFromObject(hitObject) : null;
             if (enemy) {
                 const damage = this.isAiming && this.def.aimDamage ? this.def.aimDamage : this.def.damage;
                 enemy.takeDamage(damage);

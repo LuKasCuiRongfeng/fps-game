@@ -38,6 +38,7 @@ export class GPUComputeSystem {
     private enemyVelocityBuffer!: StorageBufferAttribute;
     private enemyStateBuffer!: StorageBufferAttribute;
     private enemyTargetBuffer!: StorageBufferAttribute;
+        private enemyColorBuffer!: StorageBufferAttribute;
     
     // 粒子数据存储
     private particlePositionBuffer!: StorageBufferAttribute;
@@ -85,6 +86,10 @@ export class GPUComputeSystem {
         // 状态缓冲区 (vec4: health, speed, pathIndex, isActive)
         const states = new Float32Array(this.maxEnemies * 4);
         this.enemyStateBuffer = new StorageBufferAttribute(states, 4);
+        
+        // 颜色缓冲区 (vec3: r, g, b)
+        const colors = new Float32Array(this.maxEnemies * 3);
+        this.enemyColorBuffer = new StorageBufferAttribute(colors, 3);
         
         // 目标位置缓冲区 (vec3)
         const targets = new Float32Array(this.maxEnemies * 3);
@@ -252,6 +257,55 @@ export class GPUComputeSystem {
         this.enemyTargetBuffer.needsUpdate = true;
     }
 
+    public setEnemyPosition(index: number, position: THREE.Vector3) {
+        const posArray = this.enemyPositionBuffer.array as Float32Array;
+        posArray[index * 3] = position.x;
+        posArray[index * 3 + 1] = position.y;
+        posArray[index * 3 + 2] = position.z;
+        this.enemyPositionBuffer.needsUpdate = true;
+    }
+
+    public setEnemyRenderMode(index: number, mode: 0 | 1) {
+        const stateArray = this.enemyStateBuffer.array as Float32Array;
+        // state.z is reserved for render mode (0=cpu rig, 1=gpu impostor)
+        stateArray[index * 4 + 2] = mode;
+        this.enemyStateBuffer.needsUpdate = true;
+    }
+
+    public readEnemyPosition(index: number, out: THREE.Vector3): THREE.Vector3 {
+        const posArray = this.enemyPositionBuffer.array as Float32Array;
+        out.set(
+            posArray[index * 3],
+            posArray[index * 3 + 1],
+            posArray[index * 3 + 2]
+        );
+        return out;
+    }
+
+    public getEnemyPositionBuffer(): StorageBufferAttribute {
+        return this.enemyPositionBuffer;
+    }
+
+    public getEnemyStateBuffer(): StorageBufferAttribute {
+        return this.enemyStateBuffer;
+    }
+    
+    public getEnemyColorBuffer(): StorageBufferAttribute {
+        return this.enemyColorBuffer;
+    }
+
+    public getMaxEnemies(): number {
+        return this.maxEnemies;
+    }
+    
+    public setEnemyColor(index: number, color: THREE.Color) {
+        const colorArray = this.enemyColorBuffer.array as Float32Array;
+        colorArray[index * 3] = color.r;
+        colorArray[index * 3 + 1] = color.g;
+        colorArray[index * 3 + 2] = color.b;
+        this.enemyColorBuffer.needsUpdate = true;
+    }
+
     // ============= 获取敌人位置 =============
     public getEnemyPosition(index: number): THREE.Vector3 {
         const posArray = this.enemyPositionBuffer.array as Float32Array;
@@ -342,6 +396,7 @@ export class GPUComputeSystem {
         this.enemyVelocityBuffer.array = new Float32Array(0);
         this.enemyStateBuffer.array = new Float32Array(0);
         this.enemyTargetBuffer.array = new Float32Array(0);
+        this.enemyColorBuffer.array = new Float32Array(0);
         this.particlePositionBuffer.array = new Float32Array(0);
         this.particleVelocityBuffer.array = new Float32Array(0);
         this.particleColorBuffer.array = new Float32Array(0);

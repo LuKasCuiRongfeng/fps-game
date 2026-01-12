@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { MeshStandardNodeMaterial } from 'three/webgpu';
+import { storage, instanceIndex, positionLocal, vec3, float, mix, sin, time } from 'three/tsl';
 import type { System, FrameContext } from '../core/engine/System';
 import { Enemy } from '../enemy/Enemy';
 import { EnemyTypesConfig, EnemyConfig, EffectConfig, LevelConfig } from '../core/GameConfig';
@@ -12,6 +14,7 @@ import type { PhysicsSystem } from '../core/PhysicsSystem';
 import type { Pathfinding } from '../core/Pathfinding';
 import type { EnemyComputeSimulation, ParticleSimulation, GpuSimulationFacade } from '../core/gpu/GpuSimulationFacade';
 import type { EnemyTrailSystem } from './EnemyTrailSystem';
+import { getUserData } from '../types/GameUserData';
 
 export class EnemySystem implements System {
     public readonly name = 'enemies';
@@ -32,11 +35,18 @@ export class EnemySystem implements System {
     private enemyPool: Map<string, Enemy[]> = new Map();
     private readonly enemyPoolMaxPerKey = 6;
 
+    // GPU impostor rendering (true GPU-driven instancing)
+    private enemyImpostorMesh: THREE.InstancedMesh | null = null;
+    private gpuEnemyByIndex: Array<Enemy | null>;
+
+    private static enemyImpostorGeometry: THREE.BufferGeometry | null = null;
+
     private readonly maxGpuEnemies: number;
     private nextGpuIndex = 0;
     private freeGpuIndices: number[] = [];
 
     private readonly tmpPlayerPos = new THREE.Vector3();
+    private readonly tmpGpuPos = new THREE.Vector3();
 
     private tmpMuzzlePos = new THREE.Vector3();
     private tmpTrailEnd = new THREE.Vector3();
@@ -66,6 +76,161 @@ export class EnemySystem implements System {
         this.particles = opts.simulation.particles;
         this.trails = opts.trails;
         this.maxGpuEnemies = opts.maxGpuEnemies;
+
+        this.gpuEnemyByIndex = new Array(this.maxGpuEnemies).fill(null);
+        this.initGpuEnemyImpostors();
+    }
+
+    private initGpuEnemyImpostors(): void {
+        if (!EnemyConfig.gpuCompute.enabled) return;
+
+        // One drawcall for all far enemies: instance position comes from GPU storage buffer.
+        // Visual quality: use a low-poly humanoid silhouette (not a cylinder).
+        const geometry = EnemySystem.enemyImpostorGeometry ?? (EnemySystem.enemyImpostorGeometry = this.createEnemyImpostorGeometry());
+
+        const posBuffer = this.enemiesSim.getEnemyPositionBuffer();
+        const stateBuffer = this.enemiesSim.getEnemyStateBuffer();
+        const colorBuffer = this.enemiesSim.getEnemyColorBuffer();
+        const maxEnemies = this.enemiesSim.getMaxEnemies();
+
+        const positionStorage = storage(posBuffer, 'vec3', maxEnemies);
+        const stateStorage = storage(stateBuffer, 'vec4', maxEnemies);
+        const colorStorage = storage(colorBuffer, 'vec3', maxEnemies);
+
+        const material = new MeshStandardNodeMaterial({
+            roughness: 0.75,
+            metalness: 0.05,
+        });
+
+        const index = instanceIndex;
+        const p = positionStorage.element(index);
+        const s = stateStorage.element(index);
+        const baseColor = colorStorage.element(index);
+
+        // Match the perceived look of EnemyMaterials.createArmorMaterial():
+        // slight pulse + emissive lift so dark colors don't go black under low ambient.
+        const t = time;
+        const pulse = sin(t.mul(3)).mul(0.1).add(0.9);
+        const highlight = baseColor.mul(1.5).add(vec3(0.1, 0.1, 0.1)).min(1.0);
+        const pulseT = pulse.sub(0.9).mul(2.0).clamp(0.0, 1.0);
+        const pulsedColor = mix(baseColor, highlight, pulseT);
+        const visibleColor = pulsedColor.max(vec3(0.12, 0.12, 0.12));
+
+        // s.w = active (0/1), s.z = renderMode (0=cpu rig, 1=gpu impostor)
+        const visible = s.w.mul(s.z);
+        const hiddenY = float(-9999);
+        const y = mix(hiddenY, p.y, visible);
+        const worldPos = vec3(p.x, y, p.z);
+
+        material.positionNode = positionLocal.add(worldPos);
+        material.colorNode = visibleColor;
+        material.emissiveNode = mix(vec3(0.05, 0.1, 0.2).mul(pulse), visibleColor, float(0.15));
+
+        const mesh = new THREE.InstancedMesh(geometry, material, maxEnemies);
+        mesh.frustumCulled = false;
+        mesh.castShadow = false;
+        mesh.receiveShadow = false;
+
+        // Raycast support: weapons can map instanceId -> Enemy via this array.
+        const ud = getUserData(mesh);
+        ud.isEnemyImpostorMesh = true;
+        ud._enemyByInstanceId = this.gpuEnemyByIndex;
+
+        this.scene.add(mesh);
+        this.enemyImpostorMesh = mesh;
+    }
+
+    private createEnemyImpostorGeometry(): THREE.BufferGeometry {
+        const merge = (geometries: THREE.BufferGeometry[]): THREE.BufferGeometry => {
+            const positions: number[] = [];
+            const normals: number[] = [];
+            const uvs: number[] = [];
+            const indices: number[] = [];
+
+            let vertexOffset = 0;
+
+            for (const geo of geometries) {
+                const posAttr = geo.attributes.position;
+                const normAttr = geo.attributes.normal;
+                const uvAttr = geo.attributes.uv;
+                const indexAttr = geo.index;
+
+                if (!uvAttr) {
+                    for (let k = 0; k < posAttr.count; k++) uvs.push(0, 0);
+                }
+
+                for (let i = 0; i < posAttr.count; i++) {
+                    positions.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+                    normals.push(normAttr.getX(i), normAttr.getY(i), normAttr.getZ(i));
+                    if (uvAttr) uvs.push(uvAttr.getX(i), uvAttr.getY(i));
+                }
+
+                if (indexAttr) {
+                    for (let i = 0; i < indexAttr.count; i++) indices.push(indexAttr.getX(i) + vertexOffset);
+                } else {
+                    for (let i = 0; i < posAttr.count; i++) indices.push(i + vertexOffset);
+                }
+
+                vertexOffset += posAttr.count;
+                geo.dispose();
+            }
+
+            const out = new THREE.BufferGeometry();
+            out.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            out.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+            out.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+            out.setIndex(indices);
+            out.computeBoundingSphere();
+            out.computeBoundingBox();
+            return out;
+        };
+
+        // Build a simplified enemy silhouette in the same coordinate space as real enemies:
+        // feet at y=0, torso/head around y~1-2.
+        const geos: THREE.BufferGeometry[] = [];
+
+        // Torso armor
+        const torso = new THREE.BoxGeometry(0.62, 0.85, 0.36);
+        torso.translate(0, 1.2, 0);
+        geos.push(torso);
+
+        // Abdomen
+        const abdomen = new THREE.BoxGeometry(0.52, 0.32, 0.30);
+        abdomen.translate(0, 0.70, 0);
+        geos.push(abdomen);
+
+        // Head + helmet cap (very low poly)
+        const head = new THREE.SphereGeometry(0.22, 8, 6);
+        head.scale(1, 1.1, 1);
+        head.translate(0, 1.75, 0);
+        geos.push(head);
+
+        const helmet = new THREE.SphereGeometry(0.25, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.65);
+        helmet.translate(0, 1.80, 0);
+        geos.push(helmet);
+
+        // Arms (upper+lower as a single box each side)
+        const armL = new THREE.BoxGeometry(0.18, 0.72, 0.18);
+        armL.translate(-0.55, 1.05, 0.02);
+        geos.push(armL);
+        const armR = new THREE.BoxGeometry(0.18, 0.72, 0.18);
+        armR.translate(0.55, 1.05, 0.02);
+        geos.push(armR);
+
+        // Legs
+        const legL = new THREE.BoxGeometry(0.20, 0.82, 0.22);
+        legL.translate(-0.17, 0.40, 0);
+        geos.push(legL);
+        const legR = new THREE.BoxGeometry(0.20, 0.82, 0.22);
+        legR.translate(0.17, 0.40, 0);
+        geos.push(legR);
+
+        // Weapon block (helps silhouette a lot at distance)
+        const gun = new THREE.BoxGeometry(0.12, 0.12, 0.55);
+        gun.translate(0.40, 0.95, 0.38);
+        geos.push(gun);
+
+        return merge(geos);
     }
 
     get all(): Enemy[] {
@@ -108,8 +273,14 @@ export class EnemySystem implements System {
     }
 
     returnEnemyToPool(enemy: Enemy): void {
+        const prevGpuIndex = enemy.gpuIndex;
+
         enemy.release();
         enemy.gpuIndex = -1;
+
+        if (prevGpuIndex >= 0 && prevGpuIndex < this.gpuEnemyByIndex.length) {
+            this.gpuEnemyByIndex[prevGpuIndex] = null;
+        }
 
         const key = enemy.getPoolKey();
         const pool = this.getEnemyPool(key);
@@ -141,17 +312,38 @@ export class EnemySystem implements System {
         const targetUpdateDistSq = targetUpdateDist * targetUpdateDist;
         const meleeRangeSq = 1.0 * 1.0;
 
+        // GPU-driven rendering threshold (impostor): beyond this, render via instanced mesh in one drawcall.
+        // Keep close enemies on CPU rigs for quality + accurate per-bone hit tests.
+        const impostorDistance = Math.max(EnemyConfig.ai.limbLodDistance, 40);
+        const impostorDistanceSq = impostorDistance * impostorDistance;
+
         for (let i = this.enemies.length - 1; i >= 0; i--) {
             const enemy = this.enemies[i];
             const distSq = enemy.mesh.position.distanceToSquared(playerPos);
 
-            if (EnemyConfig.gpuCompute.enabled && enemy.gpuIndex >= 0) {
+            const gpuEnabled = EnemyConfig.gpuCompute.enabled && enemy.gpuIndex >= 0;
+            const useImpostor = gpuEnabled && distSq > impostorDistanceSq;
+
+            // True GPU-driven render: the impostor mesh reads positions/state on GPU.
+            // We still keep CPU sim authoritative for gameplay; just upload positions + render mode.
+            if (gpuEnabled) {
+                this.enemiesSim.setEnemyRenderMode(enemy.gpuIndex, useImpostor ? 1 : 0);
+                this.enemiesSim.setEnemyPosition(enemy.gpuIndex, enemy.mesh.position);
+            }
+
+            // Avoid duplicate rendering: hide the CPU rig when impostor is active.
+            // (Raycasts will hit the impostor InstancedMesh instead.)
+            enemy.mesh.visible = !useImpostor;
+
+            if (gpuEnabled) {
                 if (distSq <= targetUpdateDistSq) {
                     this.enemiesSim.setEnemyTarget(enemy.gpuIndex, playerPos);
                 }
             }
 
-            const shootResult = enemy.update(playerPos, frame.delta, this.objects, this.pathfinding);
+            const shootResult = enemy.update(playerPos, frame.delta, this.objects, this.pathfinding, {
+                movement: 'cpu',
+            });
 
             if (shootResult.fired) {
                 const muzzlePos = enemy.getMuzzleWorldPosition(this.tmpMuzzlePos);
@@ -247,6 +439,10 @@ export class EnemySystem implements System {
 
         enemy.gpuIndex = gpuIndex;
 
+        if (gpuIndex >= 0 && gpuIndex < this.gpuEnemyByIndex.length) {
+            this.gpuEnemyByIndex[gpuIndex] = enemy;
+        }
+
         this.scene.add(enemy.mesh);
         this.enemies.push(enemy);
 
@@ -255,9 +451,13 @@ export class EnemySystem implements System {
                 enemy.gpuIndex,
                 enemy.mesh.position,
                 this.camera.position,
-                EnemyConfig.speed,
-                EnemyConfig.health
+                enemy.getMoveSpeed(),
+                enemy.getMaxHealth()
             );
+
+            // Keep impostor colors identical to the real enemy type.
+            const c = new THREE.Color(EnemyTypesConfig[type].color);
+            this.enemiesSim.setEnemyColor(enemy.gpuIndex, c);
         }
     }
 

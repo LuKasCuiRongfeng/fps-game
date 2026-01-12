@@ -27,6 +27,10 @@ export interface GameUserData {
     isGrenade?: boolean;
     isEnemyWeapon?: boolean;
 
+    // GPU-driven enemy impostors (InstancedMesh)
+    isEnemyImpostorMesh?: boolean;
+    _enemyByInstanceId?: Array<Enemy | null>;
+
     // Environment / pickups
     isPickup?: boolean;
     pickupType?: string;
