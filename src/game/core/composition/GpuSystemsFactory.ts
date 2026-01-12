@@ -9,6 +9,12 @@ export function createGpuSystems(opts: {
     scene: THREE.Scene;
     gpuCompute: { gridSize: number; maxEnemies: number };
     particles: { maxParticles: number };
+    navigationGrid?: {
+        gridSize: number;
+        cellSize: number;
+        offset: number;
+        walkable: Uint8Array;
+    };
 }): {
     gpuCompute: GPUComputeSystem;
     particleSystem: GPUParticleSystem;
@@ -18,6 +24,10 @@ export function createGpuSystems(opts: {
         opts.gpuCompute.maxEnemies,
         opts.particles.maxParticles
     );
+
+    if (opts.navigationGrid) {
+        gpuCompute.setNavigationGrid(opts.navigationGrid);
+    }
 
     const particleSystem = new GPUParticleSystem(
         opts.renderer,

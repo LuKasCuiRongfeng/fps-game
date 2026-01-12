@@ -95,13 +95,6 @@ export class Enemy {
     // 射击状态 (供外部读取)
     public lastShotHit: boolean = false;
     
-        // Reuse objects for raycasting/LOS checks
-        private losRaycaster = new THREE.Raycaster();
-        private losEye = new THREE.Vector3();
-        private losDir = new THREE.Vector3();
-        private losCandidates: THREE.Object3D[] = [];
-        private losIntersects: THREE.Intersection[] = [];
-
         private nearbyCollisionEntries: Array<{ box: THREE.Box3; object: THREE.Object3D }> = [];
 
         private lastCollisionUserData: { isStair?: boolean; isGround?: boolean } | null = null;
@@ -182,10 +175,6 @@ export class Enemy {
         this.accuracy = Math.max(0.05, Math.min(0.99, baseAttack.accuracy * s.acc));
         this.engageRange = Math.min(baseAttack.engageRange, this.fireRange);
         this.aimSpeed = this.config.ai.aimSpeed;
-
-        // When three-mesh-bvh is enabled, this stops traversal after the first hit.
-        this.losRaycaster.firstHitOnly = true;
-        this.losRaycaster.near = 0;
 
         // TSL Uniforms
         this.hitStrength = uniform(0);
@@ -349,7 +338,7 @@ export class Enemy {
              
              // 只有在攻击距离内才检测视线
              if (distanceToPlayer <= this.engageRange) {
-                 this.isPlayerVisible = this.canSeePlayer(playerPosition);
+                 this.isPlayerVisible = this.canSeePlayer(playerPosition, pathfinding);
              } else {
                  this.isPlayerVisible = false;
              }
@@ -854,34 +843,12 @@ export class Enemy {
     }
     
     /**
-     * 检查是否能看到玩家 (视线检测)
-     * 优化：使用 PhysicsSystem 网格遍历，避免检测全场景
+     * Coarse LOS check using the baked navigation grid.
+     * This removes expensive scene raycasts and aligns visibility with nav obstacles.
      */
-    private canSeePlayer(playerPosition: THREE.Vector3): boolean {
-        this.losEye.copy(this.mesh.position);
-        this.losEye.y += 1.7; // 眼睛高度
-
-        this.losDir.subVectors(playerPosition, this.losEye);
-        const distance = this.losDir.length();
-        this.losDir.normalize();
-
-        this.losRaycaster.set(this.losEye, this.losDir);
-        this.losRaycaster.near = 0;
-        this.losRaycaster.far = distance;
-        
-        // 1. 使用 PhysicsSystem 获取候选物体 (Broad Phase)
-        // 如果没有 PhysicsSystem，则无法检测遮挡 (默认可见)
-        if (!this.physicsSystem) return true;
-
-        const candidates = this.physicsSystem.getRaycastCandidatesInto(this.losEye, this.losDir, distance, this.losCandidates);
-        
-        // 2. 精确检测 (Raycast)
-        // 不需要过滤 blockedObjects，因为 PhysicsSystem 只包含静态障碍物
-        this.losIntersects.length = 0;
-        this.losRaycaster.intersectObjects(candidates, true, this.losIntersects);
-        
-        // 如果没有障碍物遮挡，可以看到玩家
-        return this.losIntersects.length === 0;
+    private canSeePlayer(playerPosition: THREE.Vector3, pathfinding: Pathfinding): boolean {
+        // Use enemy body center as origin; LOS is coarse XZ-based.
+        return pathfinding.hasLineOfSight(this.mesh.position, playerPosition);
     }
     
     /**

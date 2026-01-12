@@ -3,10 +3,13 @@ import { MeshStandardNodeMaterial, type Node } from 'three/webgpu';
 import { 
     time, sin, vec3, float, 
     mix, positionLocal, uv, 
-    positionWorld
+    positionWorld,
+    length, smoothstep, sub
 } from 'three/tsl';
 
 import { WindUniforms as Wind } from './WindUniforms';
+import { UniformManager } from './TSLMaterials';
+import { EnvironmentConfig } from '../core/GameConfig';
 
 /**
  * 创建草丛材质 (TSL)
@@ -75,12 +78,26 @@ export function createGrassMaterial(colorBase: THREE.Color, colorTip: THREE.Colo
     gust.mul(gust); // 强化对比度
     
     const combinedWind = windWave.add(flutter).mul(gust).mul(Wind.strength);
-    
-    const sway = combinedWind.mul(heightFactor);
+
+    // GPU-side LOD/culling (distance from player/camera)
+    const camPos = UniformManager.getInstance().playerPosition;
+    const dist = length(positionWorld.xz.sub(camPos.xz));
+    const lodCfg = EnvironmentConfig.grass.render;
+    const lodT = smoothstep(float(lodCfg.lodStart), float(lodCfg.lodEnd), dist);
+    const cullT = smoothstep(float(lodCfg.cullStart), float(lodCfg.cullEnd), dist);
+
+    // Reduce animation work in the distance (keeps visuals stable while cutting motion cost)
+    const windLod = mix(float(1.0), float(0.35), lodT);
+    const sway = combinedWind.mul(windLod).mul(heightFactor);
     const swayX = sway.mul(Wind.direction.x);
     const swayZ = sway.mul(Wind.direction.z);
-    
-    material.positionNode = positionLocal.add(vec3(swayX, 0, swayZ));
+
+    const basePos = positionLocal.add(vec3(swayX, 0, swayZ));
+    const hiddenY = float(-9999.0);
+    material.positionNode = vec3(basePos.x, mix(basePos.y, hiddenY, cullT), basePos.z);
+
+    // Smooth fade-out to avoid pop at cull boundary.
+    material.opacityNode = sub(float(1.0), cullT);
     
     return material;
 }

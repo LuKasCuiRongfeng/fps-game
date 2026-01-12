@@ -6,9 +6,10 @@ import * as THREE from 'three';
 import { StorageBufferAttribute, WebGPURenderer, type ComputeNode } from 'three/webgpu';
 import {
     Fn, uniform, storage, instanceIndex,
-    float, vec3, vec4,
+    float, vec2, vec3, vec4,
     If,
-    max, sqrt, select, sub
+    clamp, floor,
+    max, min, sqrt, select, sub
 } from 'three/tsl';
 
 // ============= 敌人数据结构 =============
@@ -39,6 +40,27 @@ export class GPUComputeSystem {
     private enemyStateBuffer!: StorageBufferAttribute;
     private enemyTargetBuffer!: StorageBufferAttribute;
         private enemyColorBuffer!: StorageBufferAttribute;
+
+    // Navigation grid (GPU-only movement helper): 1 = walkable, 0 = blocked
+    private navWalkableBuffer!: StorageBufferAttribute;
+    private navCellCount = 1;
+    private navGridSize = uniform(1);
+    private navCellSize = uniform(1);
+    private navOffset = uniform(0);
+
+    // Flow-field (GPU): cost + direction (updated at a limited cadence)
+    private navCostA!: StorageBufferAttribute;
+    private navCostB!: StorageBufferAttribute;
+    private navDir!: StorageBufferAttribute;
+    private navPlayerIndex = uniform(0);
+    private navUpdateTimer = 0;
+    private readonly navUpdateInterval = 0.15;
+    private readonly navRelaxIterationsPerUpdate = 28;
+
+    private navInitCompute!: ComputeNode;
+    private navRelaxAtoB!: ComputeNode;
+    private navRelaxBtoA!: ComputeNode;
+    private navDirCompute!: ComputeNode;
     
     // 粒子数据存储
     private particlePositionBuffer!: StorageBufferAttribute;
@@ -61,15 +83,203 @@ export class GPUComputeSystem {
         this.maxParticles = maxParticles;
         
         this.initEnemyBuffers();
+        this.initNavigationBuffers();
         this.initParticleBuffers();
         this.createEnemyComputeShader();
         this.createParticleComputeShader();
+    }
+
+    private initNavigationBuffers() {
+        const walkable = new Float32Array(1);
+        walkable[0] = 1;
+        this.navWalkableBuffer = new StorageBufferAttribute(walkable, 1);
+        this.navCellCount = 1;
+        this.navGridSize.value = 1;
+        this.navCellSize.value = 1;
+        this.navOffset.value = 0;
+
+        const costA = new Float32Array(1);
+        const costB = new Float32Array(1);
+        costA[0] = 0;
+        costB[0] = 0;
+        this.navCostA = new StorageBufferAttribute(costA, 1);
+        this.navCostB = new StorageBufferAttribute(costB, 1);
+
+        const dir = new Float32Array(2);
+        dir[0] = 0;
+        dir[1] = 0;
+        this.navDir = new StorageBufferAttribute(dir, 2);
+
+        this.createNavFlowFieldComputeShaders();
+    }
+
+    private createNavFlowFieldComputeShaders(): void {
+        const INF = float(1e9);
+
+        const walkable = storage(this.navWalkableBuffer, 'float', this.navCellCount);
+        const costA = storage(this.navCostA, 'float', this.navCellCount);
+        const costB = storage(this.navCostB, 'float', this.navCellCount);
+        const dirOut = storage(this.navDir, 'vec2', this.navCellCount);
+
+        const gridSize = this.navGridSize;
+
+        // Initialize cost field around the player.
+        this.navInitCompute = Fn(() => {
+            const index = instanceIndex;
+            const w = walkable.element(index);
+
+            // Blocked cells get INF to prevent paths through obstacles.
+            const isBlocked = w.lessThan(0.5);
+
+            const isPlayer = index.equal(this.navPlayerIndex);
+            const base = select(isPlayer, float(0.0), INF);
+            const initial = select(isBlocked, INF, base);
+            costA.element(index).assign(initial);
+        })().compute(this.navCellCount);
+
+        const relax = (src: ReturnType<typeof storage>, dst: ReturnType<typeof storage>) => {
+            return Fn(() => {
+                const index = instanceIndex;
+                const w = walkable.element(index);
+                const isBlocked = w.lessThan(0.5);
+
+                // Grid coordinates
+                const gx = index.mod(gridSize);
+                const gz = float(index.div(gridSize));
+
+                const hasL = gx.greaterThan(0.5);
+                const hasR = gx.lessThan(gridSize.sub(1.5));
+                const hasU = gz.greaterThan(0.5);
+                const hasD = gz.lessThan(gridSize.sub(1.5));
+
+                const left = select(hasL, index.sub(1), index);
+                const right = select(hasR, index.add(1), index);
+                const up = select(hasU, index.sub(gridSize), index);
+                const down = select(hasD, index.add(gridSize), index);
+
+                const c0 = src.element(index);
+                const cL = src.element(left).add(1.0);
+                const cR = src.element(right).add(1.0);
+                const cU = src.element(up).add(1.0);
+                const cD = src.element(down).add(1.0);
+
+                const best = min(min(c0, cL), min(min(cR, cU), cD));
+                dst.element(index).assign(select(isBlocked, INF, best));
+            })().compute(this.navCellCount);
+        };
+
+        this.navRelaxAtoB = relax(costA, costB);
+        this.navRelaxBtoA = relax(costB, costA);
+
+        // Convert cost field -> direction field (pick lowest-cost neighbor)
+        this.navDirCompute = Fn(() => {
+            const index = instanceIndex;
+            const w = walkable.element(index);
+            const isBlocked = w.lessThan(0.5);
+
+            const gx = index.mod(gridSize);
+            const gz = float(index.div(gridSize));
+
+            const hasL = gx.greaterThan(0.5);
+            const hasR = gx.lessThan(gridSize.sub(1.5));
+            const hasU = gz.greaterThan(0.5);
+            const hasD = gz.lessThan(gridSize.sub(1.5));
+
+            const left = select(hasL, index.sub(1), index);
+            const right = select(hasR, index.add(1), index);
+            const up = select(hasU, index.sub(gridSize), index);
+            const down = select(hasD, index.add(gridSize), index);
+
+            const cL = costA.element(left);
+            const cR = costA.element(right);
+            const cU = costA.element(up);
+            const cD = costA.element(down);
+
+            const best = min(min(cL, cR), min(cU, cD));
+
+            const dx = select(best.equal(cL), float(-1.0), select(best.equal(cR), float(1.0), float(0.0)));
+            const dz = select(best.equal(cU), float(-1.0), select(best.equal(cD), float(1.0), float(0.0)));
+            const len = sqrt(dx.mul(dx).add(dz.mul(dz)));
+            const inv = select(len.greaterThan(0.5), float(1.0).div(len), float(0.0));
+            const dir = vec2(dx.mul(inv), dz.mul(inv));
+            dirOut.element(index).assign(select(isBlocked, vec2(0.0, 0.0), dir));
+        })().compute(this.navCellCount);
+    }
+
+    /**
+     * Upload a baked nav grid (typically exported from Pathfinding) to the GPU.
+     * This enables obstacle blocking for GPU-driven enemy movement.
+     */
+    public setNavigationGrid(nav: {
+        gridSize: number;
+        cellSize: number;
+        offset: number;
+        walkable: Uint8Array;
+    }): void {
+        const gridSize = Math.max(1, Math.floor(nav.gridSize));
+        const cellCount = gridSize * gridSize;
+        if (nav.walkable.length !== cellCount) {
+            // Fail-safe: ignore invalid grids.
+            return;
+        }
+
+        const walkable = new Float32Array(cellCount);
+        for (let i = 0; i < cellCount; i++) {
+            walkable[i] = nav.walkable[i] ? 1 : 0;
+        }
+
+        this.navWalkableBuffer = new StorageBufferAttribute(walkable, 1);
+        this.navCellCount = cellCount;
+        this.navGridSize.value = gridSize;
+        this.navCellSize.value = nav.cellSize;
+        this.navOffset.value = nav.offset;
+
+        const costA = new Float32Array(cellCount);
+        const costB = new Float32Array(cellCount);
+        for (let i = 0; i < cellCount; i++) {
+            costA[i] = 1e9;
+            costB[i] = 1e9;
+        }
+        this.navCostA = new StorageBufferAttribute(costA, 1);
+        this.navCostB = new StorageBufferAttribute(costB, 1);
+
+        const dir = new Float32Array(cellCount * 2);
+        this.navDir = new StorageBufferAttribute(dir, 2);
+
+        this.createNavFlowFieldComputeShaders();
+
+        // Storage bindings depend on buffer + element count: rebuild the compute node.
+        this.createEnemyComputeShader();
     }
 
     public getDebugInfo(): { maxEnemies: number; maxParticles: number } {
         return {
             maxEnemies: this.maxEnemies,
             maxParticles: this.maxParticles,
+        };
+    }
+
+    /**
+     * Expose nav buffers/params for GPU-only debug visualization.
+     * This is intentionally read-only and avoids any GPU->CPU readback.
+     */
+    public getNavDebugView(): {
+        gridSize: number;
+        cellSize: number;
+        offset: number;
+        cellCount: number;
+        dirBuffer: StorageBufferAttribute;
+        walkableBuffer: StorageBufferAttribute;
+        costBuffer: StorageBufferAttribute;
+    } {
+        return {
+            gridSize: Math.max(1, Math.floor(this.navGridSize.value)),
+            cellSize: this.navCellSize.value || 1,
+            offset: this.navOffset.value || 0,
+            cellCount: this.navCellCount,
+            dirBuffer: this.navDir,
+            walkableBuffer: this.navWalkableBuffer,
+            costBuffer: this.navCostA,
         };
     }
 
@@ -120,7 +330,8 @@ export class GPUComputeSystem {
         const positionStorage = storage(this.enemyPositionBuffer, 'vec3', this.maxEnemies);
         const velocityStorage = storage(this.enemyVelocityBuffer, 'vec3', this.maxEnemies);
         const stateStorage = storage(this.enemyStateBuffer, 'vec4', this.maxEnemies);
-        const targetStorage = storage(this.enemyTargetBuffer, 'vec3', this.maxEnemies);
+        const navWalkable = storage(this.navWalkableBuffer, 'float', this.navCellCount);
+        const navDir = storage(this.navDir, 'vec2', this.navCellCount);
 
         // Compute Shader: 更新敌人位置
         this.enemyUpdateCompute = Fn(() => {
@@ -129,37 +340,63 @@ export class GPUComputeSystem {
             // 读取当前状态
             const state = stateStorage.element(index);
             const isActive = state.w;
+            const renderMode = state.z; // 0=cpu rig, 1=gpu impostor
             
             // 只处理活跃的敌人
             If(isActive.greaterThan(0.5), () => {
+                // Only move enemies that are in GPU render mode.
+                // CPU-driven enemies still sync their positions into the buffer for rendering/raycasting.
+                If(renderMode.greaterThan(0.5), () => {
                 const position = positionStorage.element(index);
                 const velocity = velocityStorage.element(index);
-                const target = targetStorage.element(index);
                 const speed = state.y;
                 
-                // 计算到目标的方向
-                const toTarget = target.sub(position);
-                const distXZ = sqrt(toTarget.x.mul(toTarget.x).add(toTarget.z.mul(toTarget.z)));
+                // Sample flow-field direction at our current cell.
+                const gridSize = this.navGridSize;
+                const cellSize = this.navCellSize;
+                const offset = this.navOffset;
+
+                const gx = clamp(floor(position.x.div(cellSize).add(offset)), float(0), gridSize.sub(1));
+                const gz = clamp(floor(position.z.div(cellSize).add(offset)), float(0), gridSize.sub(1));
+                const flatIndex = gx.add(gz.mul(gridSize));
+                const flow = navDir.element(flatIndex);
+
+                // Fallback to direct chase if flow-field is undefined (e.g. all blocked).
+                const toPlayer = this.playerPosition.sub(position);
+                const distXZ = sqrt(toPlayer.x.mul(toPlayer.x).add(toPlayer.z.mul(toPlayer.z)));
+                const directX = select(distXZ.greaterThan(0.1), toPlayer.x.div(distXZ), float(0));
+                const directZ = select(distXZ.greaterThan(0.1), toPlayer.z.div(distXZ), float(0));
+
+                const useDirect = flow.x.mul(flow.x).add(flow.y.mul(flow.y)).lessThan(0.01);
+                const dirX = select(useDirect, directX, flow.x);
+                const dirZ = select(useDirect, directZ, flow.y);
                 
-                // 归一化方向 (只在XZ平面)
-                const dirX = select(distXZ.greaterThan(0.1), toTarget.x.div(distXZ), float(0));
-                const dirZ = select(distXZ.greaterThan(0.1), toTarget.z.div(distXZ), float(0));
-                
-                // 更新速度
-                const newVelX = dirX.mul(speed);
-                const newVelZ = dirZ.mul(speed);
-                
-                // 应用重力
-                const newVelY = velocity.y.add(this.gravity.mul(this.deltaTime));
-                
-                // 更新位置
-                const newPosX = position.x.add(newVelX.mul(this.deltaTime));
-                const newPosY = max(float(1), position.y.add(newVelY.mul(this.deltaTime))); // 保持在地面上
-                const newPosZ = position.z.add(newVelZ.mul(this.deltaTime));
+                // Predict next position
+                const stepX = dirX.mul(speed).mul(this.deltaTime);
+                const stepZ = dirZ.mul(speed).mul(this.deltaTime);
+                const proposedX = position.x.add(stepX);
+                const proposedZ = position.z.add(stepZ);
+
+                // Basic obstacle blocking via baked nav grid (1=walkable,0=blocked).
+                const g2x = clamp(floor(proposedX.div(cellSize).add(offset)), float(0), gridSize.sub(1));
+                const g2z = clamp(floor(proposedZ.div(cellSize).add(offset)), float(0), gridSize.sub(1));
+                const flatIndex2 = g2x.add(g2z.mul(gridSize));
+                const walk = navWalkable.element(flatIndex2);
+                const canMove = walk.greaterThan(0.5);
+
+                // Update velocity (2D only)
+                const newVelX = select(canMove, dirX.mul(speed), float(0));
+                const newVelZ = select(canMove, dirZ.mul(speed), float(0));
+
+                // Update position (keep Y stable; no terrain access on GPU)
+                const newPosX = select(canMove, proposedX, position.x);
+                const newPosY = position.y;
+                const newPosZ = select(canMove, proposedZ, position.z);
                 
                 // 写回缓冲区
                 positionStorage.element(index).assign(vec3(newPosX, newPosY, newPosZ));
-                velocityStorage.element(index).assign(vec3(newVelX, newVelY, newVelZ));
+                velocityStorage.element(index).assign(vec3(newVelX, float(0), newVelZ));
+                });
             });
         })().compute(this.maxEnemies);
     }
@@ -217,6 +454,26 @@ export class GPUComputeSystem {
     public updateEnemies(delta: number, playerPos: THREE.Vector3) {
         this.deltaTime.value = delta;
         this.playerPosition.value.copy(playerPos);
+
+        // Update flow-field at a limited cadence (keeps compute cost bounded).
+        this.navUpdateTimer += delta;
+        if (this.navUpdateTimer >= this.navUpdateInterval) {
+            this.navUpdateTimer = 0;
+
+            const gridSize = Math.max(1, Math.floor(this.navGridSize.value));
+            const cellSize = this.navCellSize.value || 1;
+            const offset = this.navOffset.value || 0;
+
+            const gx = Math.max(0, Math.min(gridSize - 1, Math.floor(playerPos.x / cellSize + offset)));
+            const gz = Math.max(0, Math.min(gridSize - 1, Math.floor(playerPos.z / cellSize + offset)));
+            this.navPlayerIndex.value = gx + gz * gridSize;
+
+            void this.renderer.computeAsync(this.navInitCompute);
+            for (let i = 0; i < this.navRelaxIterationsPerUpdate; i++) {
+                void this.renderer.computeAsync((i & 1) === 0 ? this.navRelaxAtoB : this.navRelaxBtoA);
+            }
+            void this.renderer.computeAsync(this.navDirCompute);
+        }
         
         // 执行 Compute Shader
         this.renderer.computeAsync(this.enemyUpdateCompute);

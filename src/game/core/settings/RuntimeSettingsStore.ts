@@ -17,6 +17,12 @@ export function createDefaultRuntimeSettings(): RuntimeSettings {
         friction: PlayerConfig.movement.friction,
 
         weaponSwitchCooldownMs: WeaponConfig.switching.cooldown,
+
+        flowFieldDebugEnabled: false,
+        flowFieldDebugStride: 2,
+        flowFieldDebugRadius: 70,
+        flowFieldDebugHeight: 0.12,
+        flowFieldDebugAlpha: 0.85,
     };
 }
 

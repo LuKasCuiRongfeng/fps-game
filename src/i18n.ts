@@ -96,6 +96,7 @@ void i18n
                             camera: '视角',
                             movement: '移动',
                             weapons: '武器',
+                            debug: '调试',
                         },
                         camera: {
                             sensitivity: '鼠标灵敏度',
@@ -114,6 +115,15 @@ void i18n
                         },
                         weapons: {
                             switchCooldown: '切枪冷却 (ms)',
+                        },
+                        debug: {
+                            flowField: {
+                                enabled: 'Flow-Field 导航可视化',
+                                stride: '采样步长（越大越稀疏）',
+                                radius: '显示半径',
+                                height: '离地高度',
+                                alpha: '透明度',
+                            },
                         },
                     },
                     weapon: {
@@ -192,6 +202,7 @@ void i18n
                             camera: 'Camera',
                             movement: 'Movement',
                             weapons: 'Weapons',
+                            debug: 'Debug',
                         },
                         camera: {
                             sensitivity: 'Mouse sensitivity',
@@ -210,6 +221,15 @@ void i18n
                         },
                         weapons: {
                             switchCooldown: 'Weapon switch cooldown (ms)',
+                        },
+                        debug: {
+                            flowField: {
+                                enabled: 'Flow-field navigation overlay',
+                                stride: 'Stride (higher = fewer arrows)',
+                                radius: 'Radius',
+                                height: 'Height above ground',
+                                alpha: 'Opacity',
+                            },
                         },
                     },
                     weapon: {

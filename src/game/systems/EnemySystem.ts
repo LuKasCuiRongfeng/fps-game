@@ -51,6 +51,13 @@ export class EnemySystem implements System {
     private tmpMuzzlePos = new THREE.Vector3();
     private tmpTrailEnd = new THREE.Vector3();
 
+    private readonly navGrid: {
+        gridSize: number;
+        cellSize: number;
+        offset: number;
+        walkable: Uint8Array;
+    };
+
     constructor(opts: {
         services: GameServices;
         events: GameEventBus;
@@ -72,6 +79,7 @@ export class EnemySystem implements System {
         this.level = opts.level;
         this.physicsSystem = opts.physicsSystem;
         this.pathfinding = opts.pathfinding;
+        this.navGrid = opts.pathfinding.exportNavigationGrid();
         this.enemiesSim = opts.simulation.enemies;
         this.particles = opts.simulation.particles;
         this.trails = opts.trails;
@@ -237,6 +245,42 @@ export class EnemySystem implements System {
         return this.enemies;
     }
 
+    private isWalkableXZ(x: number, z: number): boolean {
+        const { gridSize, cellSize, offset, walkable } = this.navGrid;
+        let gx = Math.floor(x / cellSize + offset);
+        let gz = Math.floor(z / cellSize + offset);
+        if (gx < 0) gx = 0;
+        else if (gx >= gridSize) gx = gridSize - 1;
+        if (gz < 0) gz = 0;
+        else if (gz >= gridSize) gz = gridSize - 1;
+        return walkable[gz * gridSize + gx] !== 0;
+    }
+
+    /**
+     * CPU proxy movement for impostor enemies (keeps gameplay logic coherent).
+     * The authoritative visible motion remains GPU-driven via compute.
+     */
+    private updateImpostorProxyMovement(enemy: Enemy, playerPos: THREE.Vector3, delta: number): void {
+        const speed = enemy.getMoveSpeed();
+        if (speed <= 0) return;
+
+        // 2D chase in XZ, matching the GPU compute intent.
+        const dx = playerPos.x - enemy.mesh.position.x;
+        const dz = playerPos.z - enemy.mesh.position.z;
+        const len = Math.sqrt(dx * dx + dz * dz);
+        if (len < 0.0001) return;
+
+        const dirX = dx / len;
+        const dirZ = dz / len;
+        const proposedX = enemy.mesh.position.x + dirX * speed * delta;
+        const proposedZ = enemy.mesh.position.z + dirZ * speed * delta;
+
+        if (this.isWalkableXZ(proposedX, proposedZ)) {
+            enemy.mesh.position.x = proposedX;
+            enemy.mesh.position.z = proposedZ;
+        }
+    }
+
     /** Remove all active enemies from the scene and return them to the pool. */
     clearAll(): void {
         for (let i = this.enemies.length - 1; i >= 0; i--) {
@@ -307,9 +351,6 @@ export class EnemySystem implements System {
             frame.playerPos.y,
             frame.playerPos.z
         );
-
-        const targetUpdateDist = EnemyConfig.gpuCompute.targetUpdateDistance;
-        const targetUpdateDistSq = targetUpdateDist * targetUpdateDist;
         const meleeRangeSq = 1.0 * 1.0;
 
         // GPU-driven rendering threshold (impostor): beyond this, render via instanced mesh in one drawcall.
@@ -319,31 +360,34 @@ export class EnemySystem implements System {
 
         for (let i = this.enemies.length - 1; i >= 0; i--) {
             const enemy = this.enemies[i];
-            const distSq = enemy.mesh.position.distanceToSquared(playerPos);
 
             const gpuEnabled = EnemyConfig.gpuCompute.enabled && enemy.gpuIndex >= 0;
+
+            const distSq = enemy.mesh.position.distanceToSquared(playerPos);
             const useImpostor = gpuEnabled && distSq > impostorDistanceSq;
 
-            // True GPU-driven render: the impostor mesh reads positions/state on GPU.
-            // We still keep CPU sim authoritative for gameplay; just upload positions + render mode.
             if (gpuEnabled) {
                 this.enemiesSim.setEnemyRenderMode(enemy.gpuIndex, useImpostor ? 1 : 0);
-                this.enemiesSim.setEnemyPosition(enemy.gpuIndex, enemy.mesh.position);
             }
 
             // Avoid duplicate rendering: hide the CPU rig when impostor is active.
             // (Raycasts will hit the impostor InstancedMesh instead.)
             enemy.mesh.visible = !useImpostor;
 
-            if (gpuEnabled) {
-                if (distSq <= targetUpdateDistSq) {
-                    this.enemiesSim.setEnemyTarget(enemy.gpuIndex, playerPos);
-                }
+            if (useImpostor) {
+                // Keep CPU-side enemy position coherent while visual movement is GPU-driven.
+                // This avoids requiring GPU->CPU buffer readback.
+                this.updateImpostorProxyMovement(enemy, playerPos, frame.delta);
             }
 
             const shootResult = enemy.update(playerPos, frame.delta, this.objects, this.pathfinding, {
-                movement: 'cpu',
+                movement: useImpostor ? 'gpu' : 'cpu',
             });
+
+            // Sync CPU->GPU only when CPU is authoritative.
+            if (gpuEnabled && !useImpostor) {
+                this.enemiesSim.setEnemyPosition(enemy.gpuIndex, enemy.mesh.position);
+            }
 
             if (shootResult.fired) {
                 const muzzlePos = enemy.getMuzzleWorldPosition(this.tmpMuzzlePos);
@@ -380,7 +424,8 @@ export class EnemySystem implements System {
                 }
             }
 
-            if (distSq < meleeRangeSq) {
+            const meleeDistSq = enemy.mesh.position.distanceToSquared(playerPos);
+            if (meleeDistSq < meleeRangeSq) {
                 this.events.emit({ type: 'state:updateHealth', delta: -10 * frame.delta });
                 if (Math.random() < 0.1) {
                     this.events.emit({ type: 'fx:damageFlash', intensity: EffectConfig.damageFlash.intensity * 0.7 });

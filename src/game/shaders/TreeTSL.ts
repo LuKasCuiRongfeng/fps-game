@@ -3,10 +3,13 @@ import { MeshStandardNodeMaterial } from 'three/webgpu'; // 注意：Vite 环境
 import { 
     time, sin, vec3, float, 
     mix, positionLocal, uv, floor,
-    positionWorld, hash
+    positionWorld, hash,
+    length, smoothstep
 } from 'three/tsl';
 
 import { WindUniforms as Wind } from './WindUniforms';
+import { UniformManager } from './TSLMaterials';
+import { EnvironmentConfig } from '../core/GameConfig';
 
 /**
  * 创建树干材质 (TSL)
@@ -27,17 +30,28 @@ export function createTrunkMaterial(colorTint: THREE.Color = new THREE.Color(0.3
     material.roughnessNode = float(0.9);
     material.metalnessNode = float(0.0);
     
+    // GPU-side LOD/culling (distance from player/camera)
+    const camPos = UniformManager.getInstance().playerPosition;
+    const dist = length(positionWorld.xz.sub(camPos.xz));
+    const cfg = EnvironmentConfig.trees.render;
+    const lodT = smoothstep(float(cfg.lodStart), float(cfg.lodEnd), dist);
+    const cullT = smoothstep(float(cfg.cullStart), float(cfg.cullEnd), dist);
+
     // 简单的风动 (树干)
     const heightFactor = positionLocal.y.max(0.0);
     const worldPos = positionWorld;
     const t = time.mul(Wind.speed);
     const phase = worldPos.x.mul(Wind.direction.x).add(worldPos.z.mul(Wind.direction.z));
+    const windLod = mix(float(1.0), float(0.35), lodT);
     const sway = sin(t.add(phase.mul(0.5)))
         .mul(Wind.strength)
+        .mul(windLod)
         .mul(0.1)
         .mul(heightFactor);
 
-    material.positionNode = positionLocal.add(vec3(sway.mul(Wind.direction.x), 0, sway.mul(Wind.direction.z)));
+    const basePos = positionLocal.add(vec3(sway.mul(Wind.direction.x), 0, sway.mul(Wind.direction.z)));
+    const hiddenY = float(-9999.0);
+    material.positionNode = vec3(basePos.x, mix(basePos.y, hiddenY, cullT), basePos.z);
     
     return material;
 }
@@ -63,6 +77,13 @@ export function createLeavesMaterial(color1Hex: THREE.Color = new THREE.Color(0.
     material.colorNode = treeColor.add(leafGradient);
     material.roughnessNode = float(0.8);
     
+    // GPU-side LOD/culling (distance from player/camera)
+    const camPos = UniformManager.getInstance().playerPosition;
+    const dist = length(positionWorld.xz.sub(camPos.xz));
+    const cfg = EnvironmentConfig.trees.render;
+    const lodT = smoothstep(float(cfg.lodStart), float(cfg.lodEnd), dist);
+    const cullT = smoothstep(float(cfg.cullStart), float(cfg.cullEnd), dist);
+
     // === 风动效果 ===
     const heightFactor = positionLocal.y.max(0.0);
     const worldPos = positionWorld;
@@ -71,8 +92,10 @@ export function createLeavesMaterial(color1Hex: THREE.Color = new THREE.Color(0.
     const phase = worldPos.x.mul(Wind.direction.x).add(worldPos.z.mul(Wind.direction.z));
     
     // 主风向摆动 (X轴)
+    const windLod = mix(float(1.0), float(0.25), lodT);
     const sway = sin(t.add(phase.mul(0.35)))
         .mul(Wind.strength)
+        .mul(windLod)
         .mul(heightFactor.pow(1.5));
     const swayX = sway.mul(Wind.direction.x);
     const swayZ = sway.mul(Wind.direction.z);
@@ -80,9 +103,12 @@ export function createLeavesMaterial(color1Hex: THREE.Color = new THREE.Color(0.
     // 树叶颤动
     const flutter = sin(t.mul(5.0).add(positionLocal.x).add(positionLocal.z).add(phase.mul(1.5)))
         .mul(0.02)
+        .mul(windLod)
         .mul(heightFactor);
 
-    material.positionNode = positionLocal.add(vec3(swayX.add(flutter), 0, swayZ.add(flutter)));
+    const basePos = positionLocal.add(vec3(swayX.add(flutter), 0, swayZ.add(flutter)));
+    const hiddenY = float(-9999.0);
+    material.positionNode = vec3(basePos.x, mix(basePos.y, hiddenY, cullT), basePos.z);
     
     return material;
 }

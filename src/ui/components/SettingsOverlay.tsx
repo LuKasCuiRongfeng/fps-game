@@ -17,6 +17,25 @@ function FieldRow({ label, children }: { label: string; children: React.ReactNod
     );
 }
 
+function Toggle({
+    checked,
+    onChange,
+}: {
+    checked: boolean;
+    onChange: (next: boolean) => void;
+}) {
+    return (
+        <label className="flex items-center justify-end gap-3 select-none">
+            <input
+                type="checkbox"
+                checked={checked}
+                onChange={(e) => onChange(e.target.checked)}
+            />
+            <span className="text-xs text-white/70">{checked ? 'ON' : 'OFF'}</span>
+        </label>
+    );
+}
+
 function Slider({
     value,
     min,
@@ -248,6 +267,78 @@ export const SettingsOverlay: React.FC<{
                             >
                                 {t('settings.resume')}
                             </button>
+                        </div>
+                    </div>
+
+                    <div className="rounded-lg border border-white/10 bg-black/30 p-4 md:col-span-2">
+                        <div className="text-sm font-semibold text-white/90">{t('settings.section.debug')}</div>
+                        <div className="mt-2">
+                            <FieldRow label={t('settings.debug.flowField.enabled')}>
+                                <Toggle
+                                    checked={!!settings.flowFieldDebugEnabled}
+                                    onChange={(v) => onChange({ ...settings, flowFieldDebugEnabled: v })}
+                                />
+                            </FieldRow>
+
+                            <FieldRow label={t('settings.debug.flowField.stride')}>
+                                <Slider
+                                    value={settings.flowFieldDebugStride}
+                                    min={1}
+                                    max={12}
+                                    step={1}
+                                    onChange={(v) =>
+                                        onChange({
+                                            ...settings,
+                                            flowFieldDebugStride: clamp(v, 1, 64),
+                                        })
+                                    }
+                                />
+                            </FieldRow>
+
+                            <FieldRow label={t('settings.debug.flowField.radius')}>
+                                <Slider
+                                    value={settings.flowFieldDebugRadius}
+                                    min={0}
+                                    max={250}
+                                    step={1}
+                                    onChange={(v) =>
+                                        onChange({
+                                            ...settings,
+                                            flowFieldDebugRadius: clamp(v, 0, 2000),
+                                        })
+                                    }
+                                />
+                            </FieldRow>
+
+                            <FieldRow label={t('settings.debug.flowField.height')}>
+                                <Slider
+                                    value={settings.flowFieldDebugHeight}
+                                    min={-2}
+                                    max={5}
+                                    step={0.01}
+                                    onChange={(v) =>
+                                        onChange({
+                                            ...settings,
+                                            flowFieldDebugHeight: clamp(v, -10, 50),
+                                        })
+                                    }
+                                />
+                            </FieldRow>
+
+                            <FieldRow label={t('settings.debug.flowField.alpha')}>
+                                <Slider
+                                    value={settings.flowFieldDebugAlpha}
+                                    min={0}
+                                    max={1}
+                                    step={0.01}
+                                    onChange={(v) =>
+                                        onChange({
+                                            ...settings,
+                                            flowFieldDebugAlpha: clamp(v, 0, 1),
+                                        })
+                                    }
+                                />
+                            </FieldRow>
                         </div>
                     </div>
                 </div>

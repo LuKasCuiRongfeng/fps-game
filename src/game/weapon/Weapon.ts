@@ -13,7 +13,6 @@ import { getDefaultGameServices } from '../core/services/GameServices';
 import type { ParticleSimulation } from '../core/gpu/GpuSimulationFacade';
 import { WeaponConfig, EffectConfig, EnemyConfig } from '../core/GameConfig';
 import { PhysicsSystem } from '../core/PhysicsSystem';
-import { HitEffect } from './WeaponEffects';
 import { BulletTrailBatch } from './BulletTrailBatch';
 import { WeaponFactory } from './WeaponFactory';
 import { getUserData } from '../types/GameUserData';
@@ -63,10 +62,6 @@ export class Weapon {
     // 弹道轨迹 (GPU Instanced)
     private readonly bulletTrails = BulletTrailBatch.get();
     private scene: THREE.Scene | null = null;
-    
-    // 命中特效
-    private hitEffects: HitEffect[] = [];
-    private hitEffectPool: HitEffect[] = [];
     
     // GPU 粒子系统引用
     private particleSystem: ParticleSimulation | null = null;
@@ -427,8 +422,6 @@ export class Weapon {
                     this.particleSystem.emitBlood(hitPoint, bloodDirection, EffectConfig.blood.particleCount);
                     // ... 更多粒子
                 }
-                
-                this.createHitEffect(hitPoint, hitNormal!, 'blood');
             } else {
                 // 命中环境 (地面或障碍物)
                 if (this.particleSystem) {
@@ -436,11 +429,11 @@ export class Weapon {
 
                     if (!hitObject) {
                         // Ground raymarch hit
-                        this.particleSystem.emitDust(hitPoint, hitNormal!, 14);
+                        this.particleSystem.emitDust(hitPoint, hitNormal!, 16);
                     } else if (surface?.isTree) {
-                        this.particleSystem.emitDebris(hitPoint, hitNormal!, 14);
+                        this.particleSystem.emitDebris(hitPoint, hitNormal!, 16);
                     } else if (surface?.isGrass) {
-                        this.particleSystem.emitDust(hitPoint, hitNormal!, 12);
+                        this.particleSystem.emitDust(hitPoint, hitNormal!, 14);
                     } else if (surface?.isRock) {
                         this.particleSystem.emitSparks(hitPoint, hitNormal!, EffectConfig.spark.particleCount);
                     } else {
@@ -448,7 +441,6 @@ export class Weapon {
                         this.particleSystem.emitSparks(hitPoint, hitNormal!, Math.max(6, Math.floor(EffectConfig.spark.particleCount * 0.75)));
                     }
                 }
-                this.createHitEffect(hitPoint, hitNormal!, 'spark');
             }
         }
 
@@ -525,24 +517,6 @@ export class Weapon {
     }
 
     /**
-     * 创建命中特效
-     */
-    private createHitEffect(position: THREE.Vector3, normal: THREE.Vector3, type: 'spark' | 'blood') {
-        if (!this.scene) return;
-        
-        let effect: HitEffect;
-        if (this.hitEffectPool.length > 0) {
-            effect = this.hitEffectPool.pop()!;
-        } else {
-            effect = new HitEffect();
-        }
-        
-        effect.init(position, normal, type);
-        this.scene.add(effect.group);
-        this.hitEffects.push(effect);
-    }
-
-    /**
      * 更新武器动画
      */
     public update(delta: number) {
@@ -586,20 +560,6 @@ export class Weapon {
         this.mesh.position.y = currentPos.y + this.swayOffset.y + this.recoilOffset.y;
         this.mesh.position.z = currentPos.z + this.recoilOffset.z;
         
-        // 更新命中特效
-        for (let i = this.hitEffects.length - 1; i >= 0; i--) {
-            const effect = this.hitEffects[i];
-            effect.update(delta);
-            
-            if (effect.isDead) {
-                if (this.scene) {
-                    this.scene.remove(effect.group);
-                }
-                // 不销毁，放回对象池
-                this.hitEffects.splice(i, 1);
-                this.hitEffectPool.push(effect);
-            }
-        }
     }
 
     public dispose() {
@@ -610,12 +570,7 @@ export class Weapon {
         this.flashMesh.geometry.dispose();
         (this.flashMesh.material as THREE.Material).dispose();
         
-        // 清理特效
-        this.hitEffects.forEach(e => e.dispose());
-        this.hitEffectPool.forEach(e => e.dispose());
-
-        this.hitEffects = [];
-        this.hitEffectPool = [];
+        // NOTE: impact VFX are GPU particles only; no per-weapon CPU effect objects to dispose.
     }
 }
 

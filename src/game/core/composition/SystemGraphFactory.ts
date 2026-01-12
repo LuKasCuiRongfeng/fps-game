@@ -105,10 +105,11 @@ export function createAndRegisterSystemGraph(opts: {
         // input/player state -> uniforms
         preSim: [playerUpdateSystem, uniformUpdateSystem],
         // compute + particle sim + world env updates
-        sim: [gpuComputeUpdateSystem, particleUpdateSystem, opts.weatherSystem, levelUpdateSystem],
+        sim: [particleUpdateSystem, opts.weatherSystem, levelUpdateSystem],
         // gameplay/domain
         postSim: [
             opts.enemySystem,
+            gpuComputeUpdateSystem,
             opts.enemyTrailSystem,
             opts.grenadeSystem,
             opts.pickupSystem,

@@ -13,6 +13,13 @@ export type RuntimeSettings = {
     friction: number;
 
     weaponSwitchCooldownMs: number;
+
+    // Debug overlays (visualization only)
+    flowFieldDebugEnabled: boolean;
+    flowFieldDebugStride: number;
+    flowFieldDebugRadius: number;
+    flowFieldDebugHeight: number;
+    flowFieldDebugAlpha: number;
 };
 
 export type RuntimeSettingsSource = {

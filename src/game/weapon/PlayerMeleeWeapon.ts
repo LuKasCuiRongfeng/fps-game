@@ -6,7 +6,6 @@ import type { GameEventBus } from '../core/events/GameEventBus';
 import { WeaponConfig } from '../core/GameConfig';
 import type { ParticleSimulation } from '../core/gpu/GpuSimulationFacade';
 import { PhysicsSystem } from '../core/PhysicsSystem';
-import { HitEffect } from './WeaponEffects';
 import { WeaponContext, IPlayerWeapon, MeleeWeaponDefinition } from './WeaponTypes';
 import { WeaponFactory } from './WeaponFactory';
 import { getUserData } from '../types/GameUserData';
@@ -227,10 +226,7 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
         private grassCandidates: THREE.InstancedMesh[] = [];
         private tmpMid = new THREE.Vector3();
 
-    // 简易命中特效对象池（复用 WeaponEffects.HitEffect）
     private scene: THREE.Scene | null = null;
-    private hitEffects: HitEffect[] = [];
-    private hitEffectPool: HitEffect[] = [];
 
     // 更像人类的近战动作：蓄力 -> 命中 -> 收势
     private isSwinging = false;
@@ -284,8 +280,6 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
 
         this.camera.add(this.mesh);
 
-        // Prewarm small effect pool to avoid first-hit hitch.
-        for (let i = 0; i < 2; i++) this.hitEffectPool.push(new HitEffect());
         this.hide();
     }
 
@@ -374,16 +368,6 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
             }
         }
 
-        // 更新命中特效
-        for (let i = this.hitEffects.length - 1; i >= 0; i--) {
-            const effect = this.hitEffects[i];
-            effect.update(delta);
-            if (effect.isDead) {
-                if (this.scene) this.scene.remove(effect.group);
-                this.hitEffects.splice(i, 1);
-                this.hitEffectPool.push(effect);
-            }
-        }
     }
 
     public onTriggerDown(ctx: WeaponContext): void {
@@ -509,7 +493,6 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
                     const dir = this.tmpDir.copy(this.raycaster.ray.direction).negate().add(this.tmpHitNormal).normalize();
                     this.particleSystem.emitBlood(this.tmpHitPoint, dir, 12);
                 }
-                this.createHitEffect(this.tmpHitPoint, this.tmpHitNormal, 'blood');
                 return;
             }
         }
@@ -549,8 +532,11 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
 
             if (bestMesh && bestId >= 0) {
                 this.chopTreeInstance(bestMesh, bestId);
-                if (this.particleSystem) this.particleSystem.emitSparks(this.tmpHitPoint, this.tmpHitNormal, 10);
-                this.createHitEffect(this.tmpHitPoint, this.tmpHitNormal, 'spark');
+                if (this.particleSystem) {
+                    // Slightly denser than before to avoid any perceived VFX reduction.
+                    this.particleSystem.emitSparks(this.tmpHitPoint, this.tmpHitNormal, 12);
+                    this.particleSystem.emitDebris(this.tmpHitPoint, this.tmpHitNormal, 8);
+                }
                 return;
             }
         }
@@ -586,8 +572,10 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
 
             if (bestMesh && bestId >= 0) {
                 this.cutGrassInstance(bestMesh, bestId);
-                if (this.particleSystem) this.particleSystem.emitSparks(this.tmpHitPoint, this.tmpHitNormal, 6);
-                this.createHitEffect(this.tmpHitPoint, this.tmpHitNormal, 'spark');
+                if (this.particleSystem) {
+                    this.particleSystem.emitDust(this.tmpHitPoint, this.tmpHitNormal, 10);
+                    this.particleSystem.emitSparks(this.tmpHitPoint, this.tmpHitNormal, 6);
+                }
                 return;
             }
         }
@@ -615,9 +603,8 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
         if (envHits.length > 0) {
             fillHitInfo(envHits[0]);
             if (this.particleSystem) {
-                this.particleSystem.emitSparks(this.tmpHitPoint, this.tmpHitNormal, 8);
+                this.particleSystem.emitSparks(this.tmpHitPoint, this.tmpHitNormal, 10);
             }
-            this.createHitEffect(this.tmpHitPoint, this.tmpHitNormal, 'spark');
         }
     }
 
@@ -658,18 +645,6 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
             outPos.multiplyScalar(wScale * rScale);
             outRot.multiplyScalar(wScale * rScale);
         }
-    }
-
-    private createHitEffect(position: THREE.Vector3, normal: THREE.Vector3, type: 'spark' | 'blood') {
-        if (!this.scene) return;
-
-        let effect: HitEffect;
-        if (this.hitEffectPool.length > 0) effect = this.hitEffectPool.pop()!;
-        else effect = new HitEffect();
-
-        effect.init(position, normal, type);
-        this.scene.add(effect.group);
-        this.hitEffects.push(effect);
     }
 
     private findTreeInstancedMesh(obj: THREE.Object3D): THREE.InstancedMesh | null {
@@ -894,7 +869,6 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
                     this.tmpDir.subVectors(this.tmpEnemyPos, nextPos).normalize();
                     this.particleSystem.emitBlood(this.tmpEnemyPos, this.tmpDir, 10);
                 }
-                this.createHitEffect(this.tmpEnemyPos, this.tmpUp, 'blood');
             }
         }
 
@@ -987,11 +961,6 @@ export class PlayerMeleeWeapon implements IPlayerWeapon {
                 m.dispose();
             }
         });
-
-        this.hitEffects.forEach(e => e.dispose());
-        this.hitEffectPool.forEach(e => e.dispose());
-        this.hitEffects = [];
-        this.hitEffectPool = [];
 
         if (this.thrown) {
             this.thrown.scene.remove(this.thrown.mesh);

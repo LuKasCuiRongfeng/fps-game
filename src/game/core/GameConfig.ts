@@ -644,7 +644,18 @@ export const EnvironmentConfig = {
                 spawn: 45,
                 default: 15
             }
-        }
+        },
+
+        // GPU-side render culling/LOD (handled in TSL materials; no CPU per-frame loops)
+        render: {
+            // Start fading out trees at this distance (meters)
+            cullStart: 520,
+            // Fully culled by this distance (meters)
+            cullEnd: 650,
+            // Reduce animation/detail work gradually (meters)
+            lodStart: 260,
+            lodEnd: 380,
+        },
     },
     grass: {
         noise: {
@@ -705,7 +716,15 @@ export const EnvironmentConfig = {
                 spawn: 25,
                 default: 8
             }
-        }
+        },
+
+        // GPU-side render culling/LOD (handled in TSL materials)
+        render: {
+            cullStart: 280,
+            cullEnd: 380,
+            lodStart: 160,
+            lodEnd: 240,
+        },
     },
     water: {
         level: -3.0,

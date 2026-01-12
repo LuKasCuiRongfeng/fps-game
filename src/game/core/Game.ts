@@ -31,6 +31,7 @@ import { createGpuSystems } from './composition/GpuSystemsFactory';
 import { createAndRegisterSystemGraph } from './composition/SystemGraphFactory';
 import { createRenderComposition } from './composition/RenderCompositionFactory';
 import { createWebGpuSimulationFacade } from './gpu/GpuSimulationFacade';
+import { FlowFieldDebugSystem } from '../systems/FlowFieldDebugSystem';
 
 import type { RuntimeSettings } from './settings/RuntimeSettings';
 import type { RuntimeSettingsSource } from './settings/RuntimeSettings';
@@ -341,13 +342,14 @@ export class Game {
         this.updateProgress(55, "i18n:loading.stage.compute");
 
         const builder = this.requireBuilder("initComputeAndParticles");
-        if (!builder.scene) return;
+        if (!builder.scene || !builder.world?.pathfinding) return;
 
         const gpu = createGpuSystems({
             renderer: builder.renderer,
             scene: builder.scene,
             gpuCompute: this.initConfig.gpuCompute,
             particles: this.initConfig.particles,
+            navigationGrid: builder.world.pathfinding.exportNavigationGrid(),
         });
 
         builder.gpu = {
@@ -468,8 +470,14 @@ export class Game {
 
     private initCoreUpdateSystems(): void {
         const builder = this.requireBuilder("initCoreUpdateSystems");
-        if (!builder.camera || !builder.world || !builder.gpu || !builder.render || !builder.gameplay || !builder.player) return;
+        if (!builder.scene || !builder.camera || !builder.world || !builder.gpu || !builder.render || !builder.gameplay || !builder.player) return;
         if (!builder.render.scopeAimProgress || !builder.render.shadowSystem || !builder.render.renderSystem) return;
+
+        const flowFieldDebugSystem = new FlowFieldDebugSystem({
+            scene: builder.scene,
+            settings: this.runtimeSettingsSource,
+            gpuCompute: builder.gpu.gpuCompute,
+        });
 
         const core = createAndRegisterSystemGraph({
             systemManager: builder.systemManager,
@@ -489,6 +497,11 @@ export class Game {
             audioSystem: builder.gameplay.audioSystem,
             shadowSystem: builder.render.shadowSystem,
             renderSystem: builder.render.renderSystem,
+            extendPhases: (phases) => {
+                // Debug overlay: updates visibility and keeps uniforms in sync.
+                // Rendering itself is handled by the existing RenderSystem.
+                phases.render.unshift(flowFieldDebugSystem);
+            },
         });
 
         void core;

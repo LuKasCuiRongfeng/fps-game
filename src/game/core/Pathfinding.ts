@@ -418,4 +418,90 @@ export class Pathfinding {
     public getWaypoints() {
         return this.waypoints;
     }
+
+    /**
+     * Export a compact, GPU-friendly navigation grid.
+     *
+     * NOTE: This is intentionally GPU-oriented: it exposes a walkable mask only.
+     * CPU pathfinding continues to use the full Node grid with weights.
+     */
+    public exportNavigationGrid(): {
+        gridSize: number;
+        cellSize: number;
+        offset: number;
+        walkable: Uint8Array;
+    } {
+        const walkable = new Uint8Array(this.gridSize * this.gridSize);
+
+        let i = 0;
+        for (let z = 0; z < this.gridSize; z++) {
+            for (let x = 0; x < this.gridSize; x++) {
+                walkable[i++] = this.grid[x][z].walkable ? 1 : 0;
+            }
+        }
+
+        return {
+            gridSize: this.gridSize,
+            cellSize: this.cellSize,
+            offset: this.offset,
+            walkable,
+        };
+    }
+
+    /**
+     * Fast coarse line-of-sight check on the navigation grid (XZ only).
+     * This is intended as a cheap substitute for scene raycasts.
+     */
+    public hasLineOfSight(from: THREE.Vector3, to: THREE.Vector3): boolean {
+        // Convert world positions to grid cell coordinates.
+        const cellSize = this.cellSize;
+        const offset = this.offset;
+        let x0 = Math.floor(from.x / cellSize + offset);
+        let z0 = Math.floor(from.z / cellSize + offset);
+        const x1 = Math.floor(to.x / cellSize + offset);
+        const z1 = Math.floor(to.z / cellSize + offset);
+
+        if (!this.isValid(x0, z0) || !this.isValid(x1, z1)) {
+            // Outside nav grid: be permissive to avoid "invisible through boundary" bugs.
+            return true;
+        }
+
+        // If we're starting inside a blocked cell (can happen near walls), nudge to nearest walkable.
+        const start = this.grid[x0][z0];
+        if (!start.walkable) {
+            const snapped = this.findNearestWalkableNode(start, 3);
+            if (snapped) {
+                x0 = snapped.x;
+                z0 = snapped.z;
+            }
+        }
+
+        // Bresenham-like traversal on grid cells.
+        let dx = Math.abs(x1 - x0);
+        let dz = Math.abs(z1 - z0);
+        const sx = x0 < x1 ? 1 : -1;
+        const sz = z0 < z1 ? 1 : -1;
+        let err = dx - dz;
+
+        // Cap steps to avoid infinite loops on degenerate inputs.
+        const maxSteps = this.gridSize * 2 + 8;
+        for (let step = 0; step < maxSteps; step++) {
+            if (!this.isValid(x0, z0)) return true;
+            if (!this.grid[x0][z0].walkable) return false;
+            if (x0 === x1 && z0 === z1) return true;
+
+            const e2 = err * 2;
+            if (e2 > -dz) {
+                err -= dz;
+                x0 += sx;
+            }
+            if (e2 < dx) {
+                err += dx;
+                z0 += sz;
+            }
+        }
+
+        // If we exceeded max steps, assume visible (fail-safe).
+        return true;
+    }
 }

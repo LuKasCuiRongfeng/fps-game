@@ -154,6 +154,7 @@ export class PlayerInputController {
     };
 
     private readonly onMouseDown = (event: MouseEvent) => {
+        if (document.body?.dataset?.uiModalOpen === '1') return;
         if (event.button === 0) {
             // In some embedded runtimes (Tauri WebView), pointer lock can fail with WrongDocumentError.
             // Firing should still work even without lock, so don't hard-gate left click.
@@ -167,6 +168,7 @@ export class PlayerInputController {
     };
 
     private readonly onMouseUp = (event: MouseEvent) => {
+        if (document.body?.dataset?.uiModalOpen === '1') return;
         if (event.button === 0) {
             this.bindings.onTriggerUp();
         } else if (event.button === 2) {
