@@ -33,6 +33,8 @@ export interface ParticleSimulation {
     emit(config: EmitterConfig): void;
     emitBlood(position: THREE.Vector3, direction: THREE.Vector3, count: number): void;
     emitSparks(position: THREE.Vector3, normal: THREE.Vector3, count: number): void;
+    emitDebris(position: THREE.Vector3, direction: THREE.Vector3, count: number): void;
+    emitDust(position: THREE.Vector3, direction: THREE.Vector3, count: number): void;
     emitMuzzleFlash(position: THREE.Vector3, direction: THREE.Vector3): void;
 }
 

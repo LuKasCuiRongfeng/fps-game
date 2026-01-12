@@ -5,7 +5,8 @@ import { Enemy } from '../enemy/Enemy';
 import type { GameServices } from '../core/services/GameServices';
 import type { ParticleSimulation } from '../core/gpu/GpuSimulationFacade';
 import { PhysicsSystem } from '../core/PhysicsSystem';
-import { BulletTrail, HitEffect } from './WeaponEffects';
+import { HitEffect } from './WeaponEffects';
+import { BulletTrailBatch } from './BulletTrailBatch';
 import { WeaponFactory } from './WeaponFactory';
 import { IPlayerWeapon, RangedWeaponDefinition, WeaponContext } from './WeaponTypes';
 import type { GameEventBus } from '../core/events/GameEventBus';
@@ -124,8 +125,7 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
     private recoilOffset: THREE.Vector3 = new THREE.Vector3();
     private swayOffset: THREE.Vector3 = new THREE.Vector3();
 
-    private bulletTrails: BulletTrail[] = [];
-    private bulletTrailPool: BulletTrail[] = [];
+    private readonly bulletTrails = BulletTrailBatch.get();
 
     private hitEffects: HitEffect[] = [];
     private hitEffectPool: HitEffect[] = [];
@@ -179,7 +179,6 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
         }
 
         // Prewarm small effect pools to avoid first-shot hitch.
-        for (let i = 0; i < 4; i++) this.bulletTrailPool.push(new BulletTrail());
         for (let i = 0; i < 2; i++) this.hitEffectPool.push(new HitEffect());
 
         // 默认位置：沿用旧 WeaponConfig 的感受
@@ -239,6 +238,9 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
     }
 
     public update(delta: number): void {
+        // Drive GPU trail lifetime.
+        this.bulletTrails.setTimeSeconds(performance.now() * 0.001);
+
         // fire loop
         if (this.fireCooldown > 0) this.fireCooldown -= delta;
         if (this.triggerHeld && this.def.canAutoFire) {
@@ -273,17 +275,6 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
             if (this.flashTimeRemaining <= 0.0001) {
                 this.flashIntensity.value = 0;
                 this.flashMesh.visible = false;
-            }
-        }
-
-        // trails
-        for (let i = this.bulletTrails.length - 1; i >= 0; i--) {
-            const trail = this.bulletTrails[i];
-            trail.update(delta);
-            if (trail.isDead) {
-                if (this.scene) this.scene.remove(trail.mesh);
-                this.bulletTrails.splice(i, 1);
-                this.bulletTrailPool.push(trail);
             }
         }
 
@@ -482,7 +473,16 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
                 this.createHitEffect(hitPoint, hitNormal ?? this.tmpUp, 'blood');
             } else {
                 if (this.particleSystem) {
-                    this.particleSystem.emitSparks(hitPoint, hitNormal ?? this.tmpUp, 8);
+                    if (!hitObject) {
+                        // Ground raymarch hit
+                        this.particleSystem.emitDust(hitPoint, hitNormal ?? this.tmpUp, 12);
+                    } else {
+                        const ud = getUserData(hitObject);
+                        if (ud.isTree) this.particleSystem.emitDebris(hitPoint, hitNormal ?? this.tmpUp, 14);
+                        else if (ud.isGrass) this.particleSystem.emitDust(hitPoint, hitNormal ?? this.tmpUp, 10);
+                        else if (ud.isRock) this.particleSystem.emitSparks(hitPoint, hitNormal ?? this.tmpUp, 10);
+                        else this.particleSystem.emitSparks(hitPoint, hitNormal ?? this.tmpUp, 8);
+                    }
                 }
                 this.createHitEffect(hitPoint, hitNormal ?? this.tmpUp, 'spark');
             }
@@ -533,17 +533,8 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
 
     private createBulletTrail(start: THREE.Vector3, end: THREE.Vector3) {
         if (!this.scene) return;
-        let trail: BulletTrail;
-        if (this.bulletTrailPool.length > 0) trail = this.bulletTrailPool.pop()!;
-        else trail = new BulletTrail();
-
-        trail.init(start, end);
-        if (!trail.isDead) {
-            this.scene.add(trail.mesh);
-            this.bulletTrails.push(trail);
-        } else {
-            this.bulletTrailPool.push(trail);
-        }
+        this.bulletTrails.ensureInScene(this.scene);
+        this.bulletTrails.emit(start, end);
     }
 
     private createHitEffect(position: THREE.Vector3, normal: THREE.Vector3, type: 'spark' | 'blood') {
@@ -566,13 +557,9 @@ export class PlayerHitscanWeapon implements IPlayerWeapon {
             (this.flashMesh.material as THREE.Material).dispose();
         }
 
-        this.bulletTrails.forEach(t => t.dispose());
         this.hitEffects.forEach(e => e.dispose());
-        this.bulletTrailPool.forEach(t => t.dispose());
         this.hitEffectPool.forEach(e => e.dispose());
-        this.bulletTrails = [];
         this.hitEffects = [];
-        this.bulletTrailPool = [];
         this.hitEffectPool = [];
     }
 }

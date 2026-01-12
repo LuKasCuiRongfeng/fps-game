@@ -62,16 +62,17 @@ export class PlayerInputController {
         // NOTE: Listeners are attached with stable bound functions.
         // For now, rely on best-effort cleanup via removeEventListener.
         const el = this.bindings.domElement;
+        const doc = el.ownerDocument ?? document;
         el.removeEventListener('click', this.onClick);
         el.removeEventListener('mousedown', this.onMouseDown);
         el.removeEventListener('mouseup', this.onMouseUp);
         el.removeEventListener('wheel', this.onWheel);
         el.removeEventListener('contextmenu', this.onContextMenu);
 
-        document.removeEventListener('pointerlockchange', this.onPointerLockChange);
-        document.removeEventListener('mousemove', this.onMouseMove);
-        document.removeEventListener('keydown', this.onKeyDown);
-        document.removeEventListener('keyup', this.onKeyUp);
+        doc.removeEventListener('pointerlockchange', this.onPointerLockChange);
+        doc.removeEventListener('mousemove', this.onMouseMove);
+        doc.removeEventListener('keydown', this.onKeyDown);
+        doc.removeEventListener('keyup', this.onKeyUp);
     }
 
     isLocked(): boolean {
@@ -108,18 +109,24 @@ export class PlayerInputController {
         } catch {
             // ignore
         }
-        if (!this.locked) {
-            try {
-                this.bindings.domElement.requestPointerLock();
-            } catch {
-                // ignore
-            }
+        if (this.locked) return;
+
+        const el = this.bindings.domElement;
+        const doc = el.ownerDocument ?? document;
+        const target: HTMLElement = el.isConnected ? el : (doc.body ?? el);
+
+        try {
+            target.requestPointerLock();
+        } catch {
+            // ignore
         }
     }
 
     unlock(): void {
         try {
-            document.exitPointerLock();
+            const el = this.bindings.domElement;
+            const doc = el.ownerDocument ?? document;
+            doc.exitPointerLock();
         } catch {
             // ignore
         }
@@ -127,17 +134,18 @@ export class PlayerInputController {
 
     private attach(): void {
         const el = this.bindings.domElement;
+        const doc = el.ownerDocument ?? document;
         el.addEventListener('click', this.onClick);
         el.addEventListener('mousedown', this.onMouseDown);
         el.addEventListener('mouseup', this.onMouseUp);
-        el.addEventListener('wheel', this.onWheel);
+        el.addEventListener('wheel', this.onWheel, { passive: true });
         el.addEventListener('contextmenu', this.onContextMenu);
 
-        document.addEventListener('pointerlockchange', this.onPointerLockChange);
-        document.addEventListener('mousemove', this.onMouseMove);
+        doc.addEventListener('pointerlockchange', this.onPointerLockChange);
+        doc.addEventListener('mousemove', this.onMouseMove);
 
-        document.addEventListener('keydown', this.onKeyDown);
-        document.addEventListener('keyup', this.onKeyUp);
+        doc.addEventListener('keydown', this.onKeyDown);
+        doc.addEventListener('keyup', this.onKeyUp);
     }
 
     private readonly onClick = (_event: MouseEvent) => {
@@ -146,11 +154,13 @@ export class PlayerInputController {
     };
 
     private readonly onMouseDown = (event: MouseEvent) => {
-        if (!this.locked) return;
-
         if (event.button === 0) {
+            // In some embedded runtimes (Tauri WebView), pointer lock can fail with WrongDocumentError.
+            // Firing should still work even without lock, so don't hard-gate left click.
+            if (!this.locked) this.requestLock();
             this.bindings.onTriggerDown(this.aiming);
         } else if (event.button === 2) {
+            if (!this.locked) this.requestLock();
             this.aiming = true;
             this.bindings.onStartAiming();
         }
@@ -186,7 +196,12 @@ export class PlayerInputController {
     };
 
     private readonly onPointerLockChange = () => {
-        this.locked = document.pointerLockElement === this.bindings.domElement;
+        const el = this.bindings.domElement;
+        const doc = el.ownerDocument ?? document;
+        const ple = doc.pointerLockElement;
+
+        // Some runtimes reject pointer lock on a canvas; we may fall back to doc.body.
+        this.locked = ple === el || ple === doc.body;
 
         if (!this.locked) {
             this.aiming = false;

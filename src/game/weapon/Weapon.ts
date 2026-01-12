@@ -13,7 +13,8 @@ import { getDefaultGameServices } from '../core/services/GameServices';
 import type { ParticleSimulation } from '../core/gpu/GpuSimulationFacade';
 import { WeaponConfig, EffectConfig, EnemyConfig } from '../core/GameConfig';
 import { PhysicsSystem } from '../core/PhysicsSystem';
-import { BulletTrail, HitEffect } from './WeaponEffects';
+import { HitEffect } from './WeaponEffects';
+import { BulletTrailBatch } from './BulletTrailBatch';
 import { WeaponFactory } from './WeaponFactory';
 import { getUserData } from '../types/GameUserData';
 
@@ -59,9 +60,8 @@ export class Weapon {
     private swayOffset: THREE.Vector3 = new THREE.Vector3();
     private isRecoiling: boolean = false;
     
-    // 弹道轨迹管理
-    private bulletTrails: BulletTrail[] = [];
-    private bulletTrailPool: BulletTrail[] = [];
+    // 弹道轨迹 (GPU Instanced)
+    private readonly bulletTrails = BulletTrailBatch.get();
     private scene: THREE.Scene | null = null;
     
     // 命中特效
@@ -431,10 +431,22 @@ export class Weapon {
                 this.createHitEffect(hitPoint, hitNormal!, 'blood');
             } else {
                 // 命中环境 (地面或障碍物)
-                // 火花特效
                 if (this.particleSystem) {
-                    // 如果是地面，可以换成 dust 效果，这里暂时统一用 sparks
-                    this.particleSystem.emitSparks(hitPoint, hitNormal!, EffectConfig.spark.particleCount);
+                    const surface = hitObject ? getUserData(hitObject) : null;
+
+                    if (!hitObject) {
+                        // Ground raymarch hit
+                        this.particleSystem.emitDust(hitPoint, hitNormal!, 14);
+                    } else if (surface?.isTree) {
+                        this.particleSystem.emitDebris(hitPoint, hitNormal!, 14);
+                    } else if (surface?.isGrass) {
+                        this.particleSystem.emitDust(hitPoint, hitNormal!, 12);
+                    } else if (surface?.isRock) {
+                        this.particleSystem.emitSparks(hitPoint, hitNormal!, EffectConfig.spark.particleCount);
+                    } else {
+                        // Generic hard surface
+                        this.particleSystem.emitSparks(hitPoint, hitNormal!, Math.max(6, Math.floor(EffectConfig.spark.particleCount * 0.75)));
+                    }
                 }
                 this.createHitEffect(hitPoint, hitNormal!, 'spark');
             }
@@ -508,22 +520,8 @@ export class Weapon {
      */
     private createBulletTrail(start: THREE.Vector3, end: THREE.Vector3) {
         if (!this.scene) return;
-        
-        let trail: BulletTrail;
-        if (this.bulletTrailPool.length > 0) {
-            trail = this.bulletTrailPool.pop()!;
-        } else {
-            trail = new BulletTrail();
-        }
-        
-        trail.init(start, end);
-        
-        if (!trail.isDead) {
-            this.scene.add(trail.mesh);
-            this.bulletTrails.push(trail);
-        } else {
-            this.bulletTrailPool.push(trail);
-        }
+        this.bulletTrails.ensureInScene(this.scene);
+        this.bulletTrails.emit(start, end);
     }
 
     /**
@@ -548,6 +546,9 @@ export class Weapon {
      * 更新武器动画
      */
     public update(delta: number) {
+        // Drive GPU trail lifetime.
+        this.bulletTrails.setTimeSeconds(performance.now() * 0.001);
+
         const t = performance.now() * 0.001;
         
         // 更新瞄准进度 (平滑过渡)
@@ -585,21 +586,6 @@ export class Weapon {
         this.mesh.position.y = currentPos.y + this.swayOffset.y + this.recoilOffset.y;
         this.mesh.position.z = currentPos.z + this.recoilOffset.z;
         
-        // 更新弹道轨迹
-        for (let i = this.bulletTrails.length - 1; i >= 0; i--) {
-            const trail = this.bulletTrails[i];
-            trail.update(delta);
-            
-            if (trail.isDead) {
-                if (this.scene) {
-                    this.scene.remove(trail.mesh);
-                }
-                // 不销毁，放回对象池
-                this.bulletTrails.splice(i, 1);
-                this.bulletTrailPool.push(trail);
-            }
-        }
-        
         // 更新命中特效
         for (let i = this.hitEffects.length - 1; i >= 0; i--) {
             const effect = this.hitEffects[i];
@@ -624,16 +610,10 @@ export class Weapon {
         this.flashMesh.geometry.dispose();
         (this.flashMesh.material as THREE.Material).dispose();
         
-        // 清理弹道和特效
-        this.bulletTrails.forEach(t => t.dispose());
+        // 清理特效
         this.hitEffects.forEach(e => e.dispose());
-        
-        // 清理对象池
-        this.bulletTrailPool.forEach(t => t.dispose());
         this.hitEffectPool.forEach(e => e.dispose());
-        
-        this.bulletTrails = [];
-        this.bulletTrailPool = [];
+
         this.hitEffects = [];
         this.hitEffectPool = [];
     }

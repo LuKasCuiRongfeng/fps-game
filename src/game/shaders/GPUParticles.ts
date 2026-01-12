@@ -477,6 +477,48 @@ export class GPUParticleSystem {
     }
 
     /**
+     * 预设发射器 - 碎屑 (木头/土块)
+     */
+    public emitDebris(position: THREE.Vector3, direction: THREE.Vector3, count: number = 12) {
+        this.emitPreset(
+            'debris',
+            position,
+            direction,
+            Math.PI * 0.7,
+            2,
+            6,
+            0.25,
+            0.6,
+            0.05,
+            0.015,
+            -18,
+            0.92,
+            count
+        );
+    }
+
+    /**
+     * 预设发射器 - 扬尘/土雾 (地面/草地)
+     */
+    public emitDust(position: THREE.Vector3, direction: THREE.Vector3, count: number = 14) {
+        this.emitPreset(
+            'smoke',
+            position,
+            direction,
+            Math.PI * 0.9,
+            0.6,
+            2.0,
+            0.25,
+            0.7,
+            0.08,
+            0.18,
+            -10,
+            0.97,
+            count
+        );
+    }
+
+    /**
      * 预设发射器 - 血液 (增强版)
      * 产生多层血液效果：主飞溅、细小飞沫、滴落、血雾
      */
@@ -594,6 +636,23 @@ export class GPUParticleSystem {
             0,
             0.9,
             8
+        );
+
+        // Add a small smoke puff for a more realistic firing feel.
+        this.emitPreset(
+            'smoke',
+            position,
+            direction,
+            Math.PI * 0.35,
+            0.4,
+            1.2,
+            0.25,
+            0.55,
+            0.05,
+            0.14,
+            -8,
+            0.98,
+            6
         );
     }
 
